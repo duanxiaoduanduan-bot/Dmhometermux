@@ -32,7 +32,11 @@ pg_start() { pg_ctlcluster "$PGVER" main start 2>/dev/null || sudo pg_ctlcluster
 pg_stop()  { pg_ctlcluster "$PGVER" main stop  2>/dev/null || sudo pg_ctlcluster "$PGVER" main stop  2>/dev/null || true; }
 
 info "初始化集群(如需要) ..."
-if [ -n "${DM_PROOT:-}" ]; then
+# 自动识别 proot / 无 systemd 环境：这类环境下 pg_createcluster+initdb 会卡死在
+# bootstrap，必须改用 su postgres + TZ=UTC + sysv 共享内存 + pg_ctl 的自包含方案。
+# 判定方式：无 /run/systemd/system（即 systemd 不是 PID1）即视为无 systemd 环境。
+# 仍保留 DM_PROOT=1 作为显式开关（termux.sh 入口会设置）。
+if [ -n "${DM_PROOT:-}" ] || [ ! -d /run/systemd/system ]; then
   # proot 环境：pg_createcluster 不支持 --no-sync 且内部 initdb 缺 --no-sync 会卡死在 bootstrap；
   # 直接用 su postgres 跑 initdb，并固化三个已验证坑：TZ=UTC 绕 zoneinfo segfault、
   # shared_memory_type=sysv 绕共享内存死等、--no-sync 绕 fsync 卡死（runuser 在 proot 下亦卡死，故用 su）。
