@@ -25,16 +25,30 @@ else
   have pg_ctlcluster || have psql || error "未找到 PostgreSQL，请先安装"
 fi
 
+# 起停抽象：非 proot 用 pg_ctlcluster（原逻辑不变）；proot 下 pg_createcluster 不可靠，改用 pg_ctl。
+PGBIN="/usr/lib/postgresql/$PGVER/bin"
+PGDATA="/var/lib/postgresql/$PGVER/main"
+pg_start() { pg_ctlcluster "$PGVER" main start 2>/dev/null || sudo pg_ctlcluster "$PGVER" main start 2>/dev/null || true; }
+pg_stop()  { pg_ctlcluster "$PGVER" main stop  2>/dev/null || sudo pg_ctlcluster "$PGVER" main stop  2>/dev/null || true; }
+
 info "初始化集群(如需要) ..."
 if [ -n "${DM_PROOT:-}" ]; then
-  # proot 环境下 initdb 易卡在 bootstrap 的 fsync 类 syscall → 必须 --no-sync；
-  # 且需先清掉可能残留的半截集群（避免 wrong ownership / already exists）。
-  pg_dropcluster "$PGVER" main --stop 2>/dev/null || true
-  rm -rf "/var/lib/postgresql/$PGVER/main" 2>/dev/null || true
-  pg_createcluster --options="--no-sync" "$PGVER" main 2>/dev/null \
-    || su postgres -c "initdb --no-sync -D /var/lib/postgresql/$PGVER/main" 2>/dev/null \
-    || true
-  chown -R postgres:postgres "/var/lib/postgresql/$PGVER/main" 2>/dev/null || true
+  # proot 环境：pg_createcluster 不支持 --no-sync 且内部 initdb 缺 --no-sync 会卡死在 bootstrap；
+  # 直接用 su postgres 跑 initdb，并固化三个已验证坑：TZ=UTC 绕 zoneinfo segfault、
+  # shared_memory_type=sysv 绕共享内存死等、--no-sync 绕 fsync 卡死（runuser 在 proot 下亦卡死，故用 su）。
+  mkdir -p /var/run/postgresql && chown postgres:postgres /var/run/postgresql 2>/dev/null || true
+  if [ ! -f "$PGDATA/PG_VERSION" ]; then
+    rm -rf "$PGDATA"
+    su postgres -c "TZ=UTC $PGBIN/initdb --no-sync --locale=C -D $PGDATA \
+      -c shared_memory_type=sysv -c dynamic_shared_memory_type=sysv" 2>&1 | tail -15
+  fi
+  pg_start() {
+    su postgres -c "TZ=UTC $PGBIN/pg_ctl -D $PGDATA -l /tmp/pg-${PGVER}-main.log \
+      -o '-c listen_addresses=localhost -p 5432 -k /var/run/postgresql -c shared_memory_type=sysv -c dynamic_shared_memory_type=sysv' start" || true
+  }
+  pg_stop() {
+    su postgres -c "$PGBIN/pg_ctl -D $PGDATA stop" 2>/dev/null || true
+  }
 else
   pg_createcluster "$PGVER" main 2>/dev/null || true
 fi
@@ -42,11 +56,9 @@ fi
 # 临时后台起库做初始化，完成后停掉交给 supervisord 前台托管。
 # 注意幂等：apt 装完 PG 后集群常已自动运行，直接 start 会报 "already running"
 # 触发 set -e 退出（Ubuntu 实测踩过）；且非 root 需要 sudo fallback。
-pg_ctlcluster "$PGVER" main stop 2>/dev/null || sudo pg_ctlcluster "$PGVER" main stop 2>/dev/null || true
+pg_stop
 if ! pg_isready -q 2>/dev/null; then
-  pg_ctlcluster "$PGVER" main start 2>/dev/null \
-    || sudo pg_ctlcluster "$PGVER" main start 2>/dev/null \
-    || true
+  pg_start
   sleep 2
 fi
 pg_isready -q 2>/dev/null || pg_isready -h localhost -q 2>/dev/null \
@@ -92,14 +104,14 @@ done
 # 一键安装会自动接续执行；手动补数据: ./install.sh geodata
 
 # 停集群，交给 dm-postgis / supervisord 前台
-pg_ctlcluster "$PGVER" main stop 2>/dev/null || sudo pg_ctlcluster "$PGVER" main stop 2>/dev/null || true
+pg_stop
 
 # ── 结果校验：库必须真实存在且可连，否则失败（不假完成）──
-pg_ctlcluster "$PGVER" main start 2>/dev/null || sudo pg_ctlcluster "$PGVER" main start 2>/dev/null || true
+pg_start
 sleep 1
 VERIFY=$(PGPASSWORD="$PGPASS" psql -h localhost -U "$PGUSER" -d Basemap -tA \
   -c "SELECT count(*) FROM pg_extension WHERE extname='postgis'" 2>/dev/null || echo "CONN_FAIL")
-pg_ctlcluster "$PGVER" main stop 2>/dev/null || sudo pg_ctlcluster "$PGVER" main stop 2>/dev/null || true
+pg_stop
 if [ "$VERIFY" != "1" ]; then
   error "校验失败：Basemap 库连不上或 postgis 扩展缺失（上面步骤的失败被容错吞掉了）。请以 root/sudo 重跑: sudo ./install.sh postgis"
 fi
