@@ -26,7 +26,18 @@ else
 fi
 
 info "初始化集群(如需要) ..."
-pg_createcluster "$PGVER" main 2>/dev/null || true
+if [ -n "${DM_PROOT:-}" ]; then
+  # proot 环境下 initdb 易卡在 bootstrap 的 fsync 类 syscall → 必须 --no-sync；
+  # 且需先清掉可能残留的半截集群（避免 wrong ownership / already exists）。
+  pg_dropcluster "$PGVER" main --stop 2>/dev/null || true
+  rm -rf "/var/lib/postgresql/$PGVER/main" 2>/dev/null || true
+  pg_createcluster --options="--no-sync" "$PGVER" main 2>/dev/null \
+    || su postgres -c "initdb --no-sync -D /var/lib/postgresql/$PGVER/main" 2>/dev/null \
+    || true
+  chown -R postgres:postgres "/var/lib/postgresql/$PGVER/main" 2>/dev/null || true
+else
+  pg_createcluster "$PGVER" main 2>/dev/null || true
+fi
 
 # 临时后台起库做初始化，完成后停掉交给 supervisord 前台托管。
 # 注意幂等：apt 装完 PG 后集群常已自动运行，直接 start 会报 "already running"

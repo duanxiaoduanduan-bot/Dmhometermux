@@ -32,9 +32,23 @@ PGDATA="/var/lib/postgresql/${PGVER}/${CLUSTER}"
 CONF="/etc/postgresql/${PGVER}/${CLUSTER}/postgresql.conf"
 PGBIN="/usr/lib/postgresql/${PGVER}/bin"
 
+# 0) proot 下确保数据目录属主正确（避免 wrong ownership）
+if [ -n "${DM_PROOT:-}" ] && [ "$(id -u)" -eq 0 ]; then
+  chown -R postgres:postgres "$PGDATA" 2>/dev/null || true
+fi
+
 # 1) 若集群尚未初始化（首次部署），创建它
 if [ ! -d "$PGDATA" ]; then
-    $SUDO pg_createcluster "${PGVER}" "${CLUSTER}" || true
+    if [ -n "${DM_PROOT:-}" ]; then
+        pg_dropcluster "${PGVER}" "${CLUSTER}" --stop 2>/dev/null || true
+        rm -rf "$PGDATA" 2>/dev/null || true
+        pg_createcluster --options="--no-sync" "${PGVER}" "${CLUSTER}" 2>/dev/null \
+            || su postgres -c "${PGBIN}/initdb --no-sync -D ${PGDATA}" 2>/dev/null \
+            || true
+        chown -R postgres:postgres "$PGDATA" 2>/dev/null || true
+    else
+        $SUDO pg_createcluster "${PGVER}" "${CLUSTER}" || true
+    fi
 fi
 
 # 2) 停掉可能以「后台服务」方式已存在的实例，避免与下方前台 exec 抢 5432 端口

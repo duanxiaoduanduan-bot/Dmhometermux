@@ -49,13 +49,14 @@ if [ "$#" -ge 1 ] && [ -d "$1/.git" ]; then
 elif [ -d "$HOME/Dmhometermux/.git" ]; then
   REPO_DIR="$HOME/Dmhometermux"; ok "复用 $REPO_DIR"
 else
-  # 自动搜索：含 DMcore + config.json 的目录
-  REPO_DIR="$(find "$HOME" -maxdepth 3 -type d -name DMcore 2>/dev/null | head -1 | xargs -r dirname 2>/dev/null || true)"
+  # 优先定位含 .git 的仓库根；旧的无 git 目录（如 tar 搬运的）会被下面的 clone 分支覆盖清理
+  REPO_DIR="$(find "$HOME" -maxdepth 4 -type d -name .git 2>/dev/null | head -1 | xargs -r dirname 2>/dev/null || true)"
   if [ -n "$REPO_DIR" ] && [ -f "$REPO_DIR/config.json" ]; then
-    ok "自动找到仓库: $REPO_DIR"
+    ok "自动找到 git 仓库: $REPO_DIR"
   else
     REPO_DIR="$HOME/Dmhometermux"
     info "克隆仓库 → $REPO_DIR ..."
+    rm -rf "$REPO_DIR" 2>/dev/null || true
     git clone "$REPO_URL" "$REPO_DIR"
   fi
 fi
@@ -69,10 +70,17 @@ if command -v pm2 >/dev/null 2>&1; then
 fi
 
 # ── 4. 进 Ubuntu(proot)，bind 挂载仓库，跑安装 + 启动 ──
+# 清理可能残留的卡死 initdb / 旧后台安装进程（proot 下 initdb 易挂死占坑）
+pkill -9 -f 'initdb' 2>/dev/null || true
+pkill -9 -f '02-postgis' 2>/dev/null || true
+pkill -9 -f 'install.sh' 2>/dev/null || true
 info "进入 Ubuntu(proot) 执行 ./install.sh（apt/supervisord 原生，含 PG+PostGIS）..."
 proot-distro login ubuntu --bind "$REPO_DIR:/dm" -- bash -c '
   set -e
+  export DM_PROOT=1
   export DEBIAN_FRONTEND=noninteractive
+  # proot 内再保险清一次卡死 initdb
+  pkill -9 initdb 2>/dev/null || true
   # 基础依赖先行（proot 最小镜像可能缺 ca-certificates/git/curl）
   apt-get update -qq 2>/dev/null || true
   apt-get install -y -qq ca-certificates git curl 2>/dev/null || true
