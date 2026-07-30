@@ -18,7 +18,7 @@
 **方式一：从 GitHub 克隆（推荐）**
 
 ```bash
-git clone <仓库地址> dm-family
+git clone https://github.com/duanxiaoduanduan-bot/Dmhometermux.git dm-family
 cd dm-family
 chmod +x install.sh uninstall.sh sync-github.sh install/*.sh
 ./install.sh          # 一键全装：dm → postgis → apps → geodata → start
@@ -45,12 +45,27 @@ sudo ./install.sh postgis   # 建 postgis 扩展需 root（普通用户建会静
 ./uninstall.sh --purge        # 连构建产物一起清，回到刚 clone 状态
 ./uninstall.sh --all          # 彻底卸载（含数据库，需确认）
 
-./sync-github.sh init <仓库地址>   # 首次关联 GitHub 并推送
+./sync-github.sh init https://github.com/duanxiaoduanduan-bot/Dmhometermux.git   # 首次关联 GitHub 并推送
 ./sync-github.sh "更新说明"        # 日常提交+推送（数据目录已 gitignore）
 ```
 
 > 数据说明：媒体文件、`DMgeo/geodata` 地图数据、`DMshow/library` 素材**不进 Git 仓库**。
 > clone 后 `./install.sh` 的 **geodata 阶段**会自动下载/导入底图数据，其余数据随使用自然积累。
+
+## 在 Termux / Android 上部署（全家服务跑在 proot Ubuntu 内）
+
+termux 官方仓库没有 PostGIS 包，但你已经装了 proot Ubuntu（`ubuntu-rootfs`）。本方式**复用你的 Ubuntu**：termux 宿主只负责装 proot-distro、把仓库 bind 进 Ubuntu，然后 `./install.sh` 在 Ubuntu 内用原生 `apt` / `pg_ctlcluster` / `supervisord` 跑全套（含 PostgreSQL/PostGIS）。媒体数据留在宿主工作目录（gitignore，不删不进仓库）。
+
+```bash
+# 在 Termux 里执行
+pkg install -y proot-distro            # 首次需要
+bash termux.sh                        # 全自动：装/复用 Ubuntu → 复用或克隆仓库 → 进 Ubuntu 跑 install.sh
+# 已有仓库想复用（含本地媒体）：bash termux.sh /path/to/your/repo
+```
+
+- proot 与宿主共享网络，服务端口在局域网 `http://192.168.1.38:<端口>` 可直接访问（见下方端口表）。
+- 宿主若还在用老 PM2 跑 DM 服务，先 `pm2 delete all` 避免端口冲突（媒体数据不受影响）。
+- 看状态：`proot-distro login ubuntu --bind $HOME/Dmhometermux:/dm -- bash -c "cd /dm && ./install.sh status"`
 
 ## 一键脚本（日常运维）
 

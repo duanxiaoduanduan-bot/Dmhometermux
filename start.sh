@@ -19,8 +19,9 @@ if [ "$EUID" -ne 0 ]; then
   exec sudo bash "$0" "$@"
 fi
 
-# ---- 项目路径（sudo 下 ~ 会变成 /root，必须写死绝对路径）----
-PROJECT_DIR="/home/duan/Desktop/dm-family-v3"
+# ---- 项目路径（从本脚本位置推断，sudo 下也能定位）----
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+PROJECT_DIR="$SCRIPT_DIR"
 CONF="$PROJECT_DIR/DMcore/supervisor/supervisord.conf"
 SOCK="$PROJECT_DIR/DMcore/supervisor/supervisor.sock"
 LOGDIR="$PROJECT_DIR/DMcore/supervisor/logs"

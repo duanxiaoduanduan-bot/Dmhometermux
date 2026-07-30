@@ -26,7 +26,28 @@ step()  { echo ""; echo -e "\033[1;35m▶ $*\033[0m"; echo "--------------------
 
 have() { command -v "$1" &>/dev/null; }
 
+# ── 平台检测与包管理 ──
+# termux 下 PREFIX 指向 /data/data/com.termux/files/usr；其余视为标准 Linux(Debian/Ubuntu)。
+is_termux() {
+  case "${PREFIX:-}" in
+    */com.termux/*) return 0 ;;
+  esac
+  [ -d /data/data/com.termux/files/usr ] && return 0
+  return 1
+}
+
+# 统一安装入口：termux → pkg；其余 → apt-get（run_apt 处理 sudo）
+pkg_install() {
+  if is_termux; then
+    pkg install -y "$@"
+  else
+    run_apt install -y "$@"
+  fi
+}
+
 need_root_apt() {
+  # termux 用 pkg 安装，普通用户即可，无需 root/sudo
+  if is_termux; then return 0; fi
   if [ "$(id -u)" -ne 0 ] && ! have sudo; then
     warn "非 root 且无 sudo，跳过 apt 安装（请手动装好依赖）"
     return 1
@@ -92,21 +113,29 @@ SUPCONF
 # （仓库里的 conf 不提交，避免写死绝对路径；换机器 clone 后由本函数重建）
 write_supervisor_programs() {
   mkdir -p "$SUP_DIR/programs" "$SUP_DIR/logs"
-  local node_bin
+  local node_bin base_path
   node_bin="$(command -v node 2>/dev/null || echo /usr/bin/node)"
+  if is_termux; then
+    base_path="${PREFIX:-/data/data/com.termux/files/usr}/bin:/system/bin:/system/xbin:/usr/bin:/bin"
+  else
+    base_path="/usr/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+  fi
 
   # 服务名|目录|运行用户(supervisor user,空=随 supervisord)|额外环境变量
   # 注意：dm-postgis 必须 root——它要 su postgres / pg_ctlcluster 起 PG，
   # 非 root 且无 NOPASSWD sudo 时会失败。其余服务随 supervisord 身份即可。
+  # termux 上 PG 跑在 proot Ubuntu(ubuntu-rootfs) 内，不由本机 supervisord 托管，故排除。
   local specs=(
     "DMmedia|DMmedia||DM_PORT=\"8081\""
     "DMgeo|DMgeo||PGHOST=\"localhost\""
     "DMpageo|DMpageo||"
     "DMChat|DMChat||"
     "DMshow|DMshow||"
-    "dm-postgis|dm-postgis|root|DM_PORT=\"5432\""
     "DMcore|DMcore||DMCORE_PORT=\"8088\"|true"
   )
+  if ! is_termux; then
+    specs+=("dm-postgis|dm-postgis|root|DM_PORT=\"5432\"")
+  fi
   local entry name dir puser extra auto
   for entry in "${specs[@]}"; do
     IFS='|' read -r name dir puser extra auto <<< "$entry"
@@ -128,7 +157,7 @@ killasgroup=true${user_line}
 stdout_logfile=${SUP_DIR}/logs/dm-${name}.log
 stderr_logfile=${SUP_DIR}/logs/dm-${name}.log
 redirect_stderr=true
-environment=PATH="/usr/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",NODE_BIN="${node_bin}",DMCORE_HOST="0.0.0.0"${extra:+,${extra}}
+environment=PATH="${base_path}",NODE_BIN="${node_bin}",DMCORE_HOST="0.0.0.0"${extra:+,${extra}}
 PROGCONF
   done
   ok "supervisor programs 已按当前路径生成: $SUP_DIR/programs/"
