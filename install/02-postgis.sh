@@ -8,15 +8,20 @@ source "$SCRIPT_DIR/common.sh"
 
 step "安装 PostGIS / 空间库"
 
-PGVER="$(detect_pgver)"
+# 方案 B（全家跑 proot Ubuntu）：固定 PG15。
+# 原因：① proot 下 PG14 的 initdb 卡死在共享内存探测且无法绕过（PG14 initdb 不支持 -c）；
+#       PG15 的 initdb 支持 `-c` 传入 sysv 共享内存，正是绕开 proot 卡死的关键。
+#      ② 固定版本可隔离 apt.postgresql.org 元包默认指向 18 的干扰（detect_pgver 会返回 pg_config 版本）。
+# 如需其他版本可用 PGVER=xx ./install.sh 覆盖。
+PGVER="${PGVER:-15}"
 info "PostgreSQL 目标版本: $PGVER"
 
 if need_root_apt; then
   if ! have pg_ctlcluster; then
     info "安装 PostgreSQL + PostGIS ..."
     run_apt update -qq
-    run_apt install -y -qq postgresql "postgresql-${PGVER}-postgis-3" postgresql-contrib 2>/dev/null \
-      || run_apt install -y -qq postgresql postgis postgresql-contrib \
+    run_apt install -y -qq "postgresql-${PGVER}" "postgresql-${PGVER}-postgis-3" 2>/dev/null \
+      || run_apt install -y -qq "postgresql-${PGVER}" "postgresql-${PGVER}-postgis-3" \
       || error "PostgreSQL/PostGIS 安装失败"
   else
     ok "PostgreSQL 已安装"
