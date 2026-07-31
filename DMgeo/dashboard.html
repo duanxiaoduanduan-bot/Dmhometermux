@@ -874,15 +874,14 @@ function drawWorldMap(ctx,W,H,worldGeo,data){
   // Build country name -> total map
   var totalMap={};
   var maxTotal=0;
-  // 用 provinces 聚合到国家(china provinces → China)
-  var srcList=data.provinces||[];
+  // 直接用 regional-stats 返回的 countries 数组（含 China 与海外国家）取每国总量
+  var srcList=data.countries||[];
   for(var i=0;i<srcList.length;i++){
-    var p=srcList[i];
-    var countryName=p.name;
-    if(isChinaProvince(p.name))countryName='China';
-    var t=parseInt(p.total)||0;
-    totalMap[countryName]=(totalMap[countryName]||0)+t;
-    if(totalMap[countryName]>maxTotal)maxTotal=totalMap[countryName];
+    var c=srcList[i];
+    var t=parseInt(c.total)||0;
+    if(!t)continue;
+    totalMap[c.name]=(totalMap[c.name]||0)+t;
+    if(totalMap[c.name]>maxTotal)maxTotal=totalMap[c.name];
   }
 
   // Draw world countries — Taiwan drawn as part of China

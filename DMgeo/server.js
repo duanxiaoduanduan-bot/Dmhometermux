@@ -1109,32 +1109,50 @@ const server = http.createServer((req, res) => {
       const provs = await basemapPool.query("SELECT name, geom FROM provinces");
       const cities = await basemapPool.query("SELECT name, geom FROM cities");
       const dists = await basemapPool.query("SELECT name, geom FROM districts");
+      const countriesGeo = await basemapPool.query("SELECT name, geom FROM countries");
 
-      const pMap = {};
+      const pMap = {};   // 中国省/市/区层级
+      const cMap = {};   // 海外国家层级
       for (const f of feats.rows) {
-        // 找省
+        // 找省（中国）
         let pn = '海外/未知', cn = '海外/未知', dn = '海外/未知';
         for (const p of provs.rows) {
           const r = await basemapPool.query("SELECT ST_Contains($1, ST_SetSRID(ST_MakePoint($2,$3),4326)) AS ok", [p.geom, f.lng, f.lat]);
           if (r.rows[0].ok) { pn = p.name; break; }
         }
-        // 找市
-        for (const c of cities.rows) {
-          const r = await basemapPool.query("SELECT ST_Contains($1, ST_SetSRID(ST_MakePoint($2,$3),4326)) AS ok", [c.geom, f.lng, f.lat]);
-          if (r.rows[0].ok) { cn = c.name; break; }
+        if (pn !== '海外/未知') {
+          // 找市
+          for (const c of cities.rows) {
+            const r = await basemapPool.query("SELECT ST_Contains($1, ST_SetSRID(ST_MakePoint($2,$3),4326)) AS ok", [c.geom, f.lng, f.lat]);
+            if (r.rows[0].ok) { cn = c.name; break; }
+          }
+          // 找区县
+          for (const d of dists.rows) {
+            const r = await basemapPool.query("SELECT ST_Contains($1, ST_SetSRID(ST_MakePoint($2,$3),4326)) AS ok", [d.geom, f.lng, f.lat]);
+            if (r.rows[0].ok) { dn = d.name; break; }
+          }
+          if (!pMap[pn]) pMap[pn] = {};
+          if (!pMap[pn][cn]) pMap[pn][cn] = {};
+          if (!pMap[pn][cn][dn]) pMap[pn][cn][dn] = { points:0, lines:0, polygons:0, timePaths:0, total:0, coords:[] };
+          const rc = pMap[pn][cn][dn];
+          if (f.type === 'point') rc.points++; else if (f.type === 'line') rc.lines++; else if (f.type === 'polygon') rc.polygons++;
+          rc.total++;
+          if (f.lng) rc.coords.push({lng: Math.round(f.lng*10000)/10000, lat: Math.round(f.lat*10000)/10000, name: f.name});
+        } else {
+          // 海外：匹配国家（台湾→China，遵循一个中国表述）
+          let countryName = '海外/未知';
+          for (const c of countriesGeo.rows) {
+            const r = await basemapPool.query("SELECT ST_Contains($1, ST_SetSRID(ST_MakePoint($2,$3),4326)) AS ok", [c.geom, f.lng, f.lat]);
+            if (r.rows[0].ok) { countryName = (c.name === 'Taiwan') ? 'China' : c.name; break; }
+          }
+          if (countryName !== '海外/未知') {
+            if (!cMap[countryName]) cMap[countryName] = { points:0, lines:0, polygons:0, total:0, coords:[] };
+            const rc = cMap[countryName];
+            if (f.type === 'point') rc.points++; else if (f.type === 'line') rc.lines++; else if (f.type === 'polygon') rc.polygons++;
+            rc.total++;
+            if (f.lng) rc.coords.push({lng: Math.round(f.lng*10000)/10000, lat: Math.round(f.lat*10000)/10000, name: f.name});
+          }
         }
-        // 找区县
-        for (const d of dists.rows) {
-          const r = await basemapPool.query("SELECT ST_Contains($1, ST_SetSRID(ST_MakePoint($2,$3),4326)) AS ok", [d.geom, f.lng, f.lat]);
-          if (r.rows[0].ok) { dn = d.name; break; }
-        }
-        if (!pMap[pn]) pMap[pn] = {};
-        if (!pMap[pn][cn]) pMap[pn][cn] = {};
-        if (!pMap[pn][cn][dn]) pMap[pn][cn][dn] = { points:0, lines:0, polygons:0, timePaths:0, total:0, coords:[] };
-        const rc = pMap[pn][cn][dn];
-        if (f.type === 'point') rc.points++; else if (f.type === 'line') rc.lines++; else if (f.type === 'polygon') rc.polygons++;
-        rc.total++;
-        if (f.lng) rc.coords.push({lng: Math.round(f.lng*10000)/10000, lat: Math.round(f.lat*10000)/10000, name: f.name});
       }
 
       const provinces = [];
@@ -1158,6 +1176,16 @@ const server = http.createServer((req, res) => {
       }
       provinces.sort((a,b)=>b.total-a.total);
       const countries = [];
+      let chinaTotal = 0;
+      for (const p of provinces) chinaTotal += (p.total||0);
+      const taiwanAdd = cMap['China'] ? cMap['China'].total : 0;
+      if (chinaTotal + taiwanAdd > 0)
+        countries.push({ name:'China', total: chinaTotal + taiwanAdd, points:0, lines:0, polygons:0, cities:[], coords: (cMap['China']?cMap['China'].coords:[]) });
+      for (const cn of Object.keys(cMap).sort()) {
+        if (cn === 'China') continue; // 已与省级合计合并
+        const c = cMap[cn];
+        if (c.total > 0) countries.push({ name: cn, total: c.total, points: c.points, lines: c.lines, polygons: c.polygons, cities: [], coords: c.coords });
+      }
       const coveredProvs = provinces.filter(p=>p.total>0);
       const coveredCities = new Set(), coveredDistricts = new Set();
       for (const p of coveredProvs) {

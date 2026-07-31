@@ -3,13 +3,15 @@
 //
 // 离线优先：本地 map-boundaries/world-countries.geojson 存在则直接读（满血离线版默认走此路径）；
 // 缺失时再从 Natural Earth 官方矢量源（jsdelivr）下载并缓存。兼容大屏：统一属性名为 name。
+// 注意：必须用 50m 而非 110m —— 110m 分辨率会省略新加坡等微型国家/城市国家，
+// 导致海外要素无法匹配国家、世界地图缺国界。50m 含全部主权国家（含小国），体积可接受。
 const fs = require('fs');
 const path = require('path');
 const https = require('https');
 const { Pool } = require('pg');
 
 const ROOT = __dirname;
-const SRC = 'https://cdn.jsdelivr.net/gh/nvkelso/natural-earth-vector@master/geojson/ne_110m_admin_0_countries.geojson';
+const SRC = 'https://cdn.jsdelivr.net/gh/nvkelso/natural-earth-vector@master/geojson/ne_50m_admin_0_countries.geojson';
 const OUT = path.join(ROOT, 'map-boundaries/world-countries.geojson');
 
 function download(url) {
