@@ -920,18 +920,28 @@ function drawWorldMap(ctx,W,H,worldGeo,data){
     drawGeoFeature(ctx,f,W,H,scale,ox,oy);
   }
 
-  // Country labels (only those with data)
+  // Glow markers for lit countries — 即便城市国家(新加坡等)几何极小，也能看见"亮"
   for(var i=0;i<worldGeo.features.length;i++){
     var f=worldGeo.features[i];
     var name=f.properties.name;
     var total=totalMap[name]||0;
     if(total===0)continue;
+    var intensity=total/maxTotal;
     var centroid=getCentroid(f);
+    if(!centroid)continue;
     var pt=project(centroid[0],centroid[1],W,H,scale,ox,oy);
     if(pt.x<0||pt.x>W||pt.y<0||pt.y>H)continue;
-    ctx.fillStyle='#aaa';ctx.font='6px sans-serif';ctx.textAlign='center';
-    ctx.fillText(name.substring(0,10),pt.x,pt.y);
-    ctx.fillText(total,pt.x,pt.y+8);
+    var r=3+intensity*5;
+    // 外圈光晕
+    ctx.beginPath();ctx.arc(pt.x,pt.y,r*2.4,0,Math.PI*2);
+    ctx.fillStyle='rgba(140,220,255,'+(0.18+intensity*0.30)+')';ctx.fill();
+    // 核心亮点
+    ctx.beginPath();ctx.arc(pt.x,pt.y,r,0,Math.PI*2);
+    ctx.fillStyle='rgba(200,248,255,'+(0.9+intensity*0.1)+')';ctx.fill();
+    // 标签
+    ctx.fillStyle='#fff';ctx.font='bold 7px sans-serif';ctx.textAlign='center';
+    ctx.fillText(name.substring(0,12),pt.x,pt.y-r-4);
+    ctx.fillText(total,pt.x,pt.y-r+4);
   }
 
   // Hover highlight
