@@ -758,13 +758,11 @@ function drawRegionChart(data,level){
   var W=rect.width,H=rect.height;
   ctx.clearRect(0,0,W,H);
 
-  // 地图用边界数据(loadWorldGeo/loadProvGeo)独立于统计面板渲染,
-  // 因此只判断 data 是否加载(非 null), 不因 provinces/countries 为空就跳过绘图。
+  // 地图用边界数据(loadWorldGeo/loadProvGeo)独立于统计面板渲染：
+  // 即便 regional-stats 失败(data=null)也照常加载并绘制底图边界，仅不发光/不上统计色。
+  // 对应“底图=Basemap 独立”架构——统计挂了不应连底图一起消失（之前 if(!data)return 的 bug）。
   if(!data){
-    ctx.fillStyle='#555';ctx.font='14px sans-serif';ctx.textAlign='center';
-    ctx.fillText('暂无数据',W/2,H/2);
-    $('regionChartLegend').innerHTML='';
-    return;
+    data = { countries:[], provinces:[], cities:[], districts:[] };
   }
 
   var rv=_regionView;
