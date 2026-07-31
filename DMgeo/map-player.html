@@ -725,6 +725,7 @@ function deleteMarker(id){
 var markerMode=false;
 function addMarkerMode(){
   if(linkMode)stopLinkMode();
+  map.off('click',onDrawClick);map.off('click',onPolygonClick);map.on('click',onMapClick);
   markerMode=true;addPhotoMode=false;drawing=false;
   if(drawLayer)drawLayer.clearLayers();drawPoints=[];
   document.getElementById('drawBtn').textContent='✏️ 线';
@@ -840,7 +841,7 @@ function startDraw(){
   if(!drawLayer){drawLayer=L.layerGroup().addTo(map)}
   tempLine=L.polyline([],{color:'#00cec9',weight:3,dashArray:'8,6'}).addTo(drawLayer);
   map.getContainer().style.cursor='crosshair';
-  map.off('click');map.on('click',onDrawClick);
+  map.off('click',onMapClick);map.on('click',onDrawClick);
 }
 function onDrawClick(e){if(!drawing)return;drawPoints.push([e.latlng.lat,e.latlng.lng]);tempLine.setLatLngs(drawPoints);L.circleMarker(e.latlng,{radius:4,color:'#00cec9',fillColor:'#fff',fillOpacity:1,weight:2}).addTo(drawLayer)}
 function finishDraw(){
@@ -849,7 +850,7 @@ function finishDraw(){
   document.getElementById('drawBtn').style.background='';
   document.getElementById('drawBtn').style.borderColor='';
   map.getContainer().style.cursor='';
-  map.off('click',onDrawClick);
+  map.off('click',onDrawClick);map.on('click',onMapClick);
   if(drawPoints.length<2){if(drawLayer)drawLayer.clearLayers();drawPoints=[];showToast('至少需要2个点');return}
   var name=prompt('线名称','线 '+(pathId+1));if(!name){if(drawLayer)drawLayer.clearLayers();drawPoints=[];return}
   var id='p_'+(++pathId);
@@ -875,7 +876,7 @@ function startPolygonDraw(){
   if(!drawLayer){drawLayer=L.layerGroup().addTo(map)}
   tempPolygon=L.polygon([],{color:'#a29bfe',weight:2,fillColor:'#a29bfe',fillOpacity:0.15,dashArray:'6,4'}).addTo(drawLayer);
   map.getContainer().style.cursor='crosshair';
-  map.off('click');map.on('click',onPolygonClick);
+  map.off('click',onMapClick);map.on('click',onPolygonClick);
   map.on('dblclick',function(e){if(polygonDrawing){L.DomEvent.stop(e);finishPolygonDraw()}});
 }
 function onPolygonClick(e){
@@ -890,7 +891,7 @@ function finishPolygonDraw(){
   document.getElementById('polyBtn').style.background='';
   document.getElementById('polyBtn').style.borderColor='';
   map.getContainer().style.cursor='';
-  map.off('click',onPolygonClick);
+  map.off('click',onPolygonClick);map.on('click',onMapClick);
   if(polygonPoints.length<3){if(drawLayer)drawLayer.clearLayers();polygonPoints=[];showToast('至少需要3个点');return}
   var name=prompt('区域名称','区域 '+(pathId+1));if(!name){if(drawLayer)drawLayer.clearLayers();polygonPoints=[];return}
   var id='p_'+(++pathId);
@@ -1162,7 +1163,7 @@ function renderPhotoGrid(){
 }
 
 // ===== 地图点击 =====
-map.on('click',function(e){
+function onMapClick(e){
   if(drawing)return;
   if(addPhotoMode&&activePhoto!==null&&photoList[activePhoto]){
     // 照片模式：在点击位置放照片
@@ -1189,7 +1190,8 @@ map.on('click',function(e){
     pendingMarker={lat:e.latlng.lat,lng:e.latlng.lng};
     showMarkerCreatePanel(e.latlng.lat,e.latlng.lng);
   }
-});
+}
+map.on('click', onMapClick);
 
 // ===== 灯箱 =====
 function openLightbox(url,info,isVideo){
