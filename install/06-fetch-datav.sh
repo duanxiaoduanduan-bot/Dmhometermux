@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # 06-fetch-datav.sh — 联网刷新阿里行政区划：拉取最新（fetch-datav.js）+ upsert 入库（import-datav.js）
 #
-# 与 geodata 阶段的区别：联网拉取是【必需】的（fetch 失败即报错退出，明确提示切换网络），
-# 不像 install.sh geodata 里 fetch 失败可回落缓存。这是"切换网络后可以纯拉数据"的独立入口。
+# 与 geodata 阶段的区别：联网拉取是【独立刷新入口】——fetch 多源降级，主源不可达自动试
+# 备选源（DM_GEO_FALLBACK_BASE）；所有源不可达时若有本地缓存则软失败保留（exit 0），仅无缓存才报错。
+# 这是"切换网络后可以纯拉数据补齐"的独立入口。
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -47,7 +48,7 @@ fi
 
 step "联网拉取阿里行政区划（fetch-datav.js）"
 (cd "$GEO_DIR" && node fetch-datav.js) \
-  || error "fetch-datav.js 失败：阿里 DataV 不可达（很可能被 Cloudflare / 代理拦截）。请切换网络后重试: ./install.sh fetch-datav"
+  || error "fetch-datav.js 失败：所有数据源均不可达（很可能被 Cloudflare / 代理拦截，或本地无缓存）。请切换网络后重试: ./install.sh fetch-datav"
 
 step "upsert 入库（import-datav.js）"
 (cd "$GEO_DIR" && node import-datav.js 2>&1 | tail -8) \

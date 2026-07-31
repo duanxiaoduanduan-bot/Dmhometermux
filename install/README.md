@@ -44,6 +44,10 @@
 | 本地导入 | `./install.sh geodata --local <目录>` | 支持完整缓存布局（`china/provinces...`）或散装 geojson/json/gpx |
 | 跳过 | `SKIP_GEODATA=1 ./install.sh` | 不装底图（会黑屏，可后补） |
 
+> **底图多源降级**：默认主源阿里 DataV（国内直连，不开代理优先）。若主源不可达，可设
+> `DM_GEO_FALLBACK_BASE=https://你的镜像/bound/`（结构一致、同样按 `{adcode}_full.json` 分片）自动降级；
+> 未配置且所有源不可达时，有本地缓存则软失败保留、换网络重跑 `./install.sh fetch-datav` 即可补齐。
+
 此外 DMgeo 自带「数据库管理」页支持上传 GeoJSON/CSV 到任意表（`POST /api/pg/tables/:name/upload`），
 日常导入自己的数据用它即可。
 

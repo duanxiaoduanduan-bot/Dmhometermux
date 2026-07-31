@@ -13,7 +13,7 @@
 #   · PostgreSQL 已在跑（没跑会临时拉起，跑完停掉）
 #   · Basemap 库已建（即 postgis 阶段已跑过）
 #
-# 若阿里不可达，脚本会明确报错 exit(2) 并提示切网络重试 —— 这正是它和 geodata 阶段的区别。
+# 若所有数据源均不可达：本地已有缓存则软失败保留缓存（exit 0），仅无缓存才 exit(2) 提示切网络重试。
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")" && pwd)"
