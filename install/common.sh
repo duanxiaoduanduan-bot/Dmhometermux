@@ -238,7 +238,11 @@ runit_up() {
     sleep 2
   fi
   # sv 必须用绝对路径：termux 的 SVDIR 默认值并不指向 $PREFIX/var/service
-  sv up "$svc" 2>/dev/null || true
+  # 关键：若服务已在 run（常见于 run 文件被重写指向新仓库后），sv up 是 no-op，
+  # 不会重新 exec run 文件，导致进程悬在旧目录、代码更新不生效。
+  # 必须用 restart 让 runsv 重新拉起、加载最新 run 文件；restart 失败（服务未起）
+  # 时退而 sv up 拉起。
+  sv restart "$svc" 2>/dev/null || sv up "$svc" 2>/dev/null || true
 
   # 等待真正进入 run 状态（起不来时返回非 0，让调用方能感知失败）
   for i in $(seq 1 15); do
