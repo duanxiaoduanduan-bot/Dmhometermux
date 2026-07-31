@@ -98,6 +98,11 @@ function offlineBuild() {
   await pool.query('CREATE UNIQUE INDEX IF NOT EXISTS provinces_code_uidx ON provinces(code)');
   await pool.query('CREATE UNIQUE INDEX IF NOT EXISTS cities_code_uidx ON cities(code)');
   await pool.query('CREATE UNIQUE INDEX IF NOT EXISTS districts_code_uidx ON districts(code)');
+  // 空间索引：regional-stats 用 ST_Contains 落点省/市/区，缺 GIST 索引会退化为顺序扫描
+  // （尤其 2840 个 districts），每次统计随要素数线性放大。补上后 ST_Contains 走索引，提速数十倍。
+  await pool.query('CREATE INDEX IF NOT EXISTS idx_provinces_geom ON provinces USING GIST (geom)');
+  await pool.query('CREATE INDEX IF NOT EXISTS idx_cities_geom ON cities USING GIST (geom)');
+  await pool.query('CREATE INDEX IF NOT EXISTS idx_districts_geom ON districts USING GIST (geom)');
 
   for (const p of provinces) {
     try {

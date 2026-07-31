@@ -27,6 +27,45 @@ const adminPool = new Pool({
   max: 3
 });
 
+// 串行化“选中库要素 → Basemap.features”的同步：regional-stats 是 GET 但有清写副作用，
+// 并发调用（切库/多面板重渲）可能互相覆盖或重复清写；用模块级 promise 链串行化，
+// 任一同步失败不影响后续调用链。
+let _statsSyncChain = Promise.resolve();
+async function syncFeaturesToBasemap(featPool) {
+  const run = _statsSyncChain.then(async () => {
+    try {
+      // “放进来”：把选中库的要素同步进 Basemap.features（底图库的标准要素集），
+      // 统计统一从 Basemap.features 读——对应“trip/其他数据库放进来会点亮底图并统计”的架构。
+      const srcFeats = await featPool.query(
+        "SELECT name, type, COALESCE(properties,'{}'::jsonb) AS properties, ST_AsGeoJSON(geom) AS geom FROM features"
+      );
+      const bc = await basemapPool.connect();
+      try {
+        await bc.query('BEGIN');
+        await bc.query('DELETE FROM features');
+        for (const sf of srcFeats.rows) {
+          await bc.query(
+            'INSERT INTO features (name, type, geom, properties) VALUES ($1,$2,ST_SetSRID(ST_GeomFromGeoJSON($3),4326),$4)',
+            [sf.name, sf.type, sf.geom, sf.properties]
+          );
+        }
+        await bc.query('COMMIT');
+      } catch (e) {
+        await bc.query('ROLLBACK');
+        throw e;
+      } finally {
+        bc.release();
+      }
+    } catch (e) {
+      // 源库无 features 表（如 dmpageo 仅为边界库）时，保留 Basemap.features 现状，不中断统计
+      console.warn('[regional-stats] 同步选中库要素失败，沿用 Basemap.features 现状:', e.message);
+    }
+  });
+  // 吞掉链内错误，保证后续同步可继续；run 本身仍反映本次是否成功
+  _statsSyncChain = run.then(() => {}, () => {});
+  return run;
+}
+
 // 启动时测试连接
 pgPool.query('SELECT PostGIS_version()').then(r => {
   console.log('  🗄️  PostGIS:', r.rows[0].postgis_version.split(' ')[0]);
@@ -1103,8 +1142,11 @@ const server = http.createServer((req, res) => {
     try {
       const featDb = url.searchParams.get('db') || 'trip';
       const featPool = featDb === 'trip' ? pgPool : featDb === 'Basemap' ? basemapPool : new Pool({ database: featDb, user: 'dmuser', password: 'dmpageo123', max: 3 });
-      // 读要素(来自选的库)
-      const feats = await featPool.query("SELECT id, name, type, ST_X(ST_Centroid(geom)) AS lng, ST_Y(ST_Centroid(geom)) AS lat FROM features");
+      // “放进来”：把选中库的要素同步进 Basemap.features（底图库的标准要素集），
+      // 统计统一从 Basemap.features 读（精密后端统计源）。串行锁+容错已封装在辅助函数内。
+      await syncFeaturesToBasemap(featPool);
+      // 统计要素统一读 Basemap.features（精密后端统计），边界几何仍从 Basemap 读
+      const feats = await basemapPool.query("SELECT id, name, type, ST_X(ST_Centroid(geom)) AS lng, ST_Y(ST_Centroid(geom)) AS lat FROM features");
       // 边界始终从 Basemap 读
       const provs = await basemapPool.query("SELECT name, geom FROM provinces");
       const cities = await basemapPool.query("SELECT name, geom FROM cities");

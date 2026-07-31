@@ -14,6 +14,8 @@ async function main() {
   await pgPool.query(`CREATE TABLE IF NOT EXISTS provinces (id SERIAL PRIMARY KEY, name TEXT, code TEXT, geom GEOMETRY(GEOMETRY,4326))`);
   await pgPool.query(`CREATE TABLE IF NOT EXISTS cities (id SERIAL PRIMARY KEY, name TEXT, province_code TEXT, code TEXT, geom GEOMETRY(GEOMETRY,4326))`);
   await pgPool.query(`CREATE INDEX IF NOT EXISTS idx_countries_geom ON countries USING GIST (geom)`);
+  await pgPool.query(`CREATE INDEX IF NOT EXISTS idx_provinces_geom ON provinces USING GIST (geom)`);
+  await pgPool.query(`CREATE INDEX IF NOT EXISTS idx_cities_geom ON cities USING GIST (geom)`);
 
   // ===== 1. 清空旧表 =====
   console.log('1/4 清空旧数据...');
