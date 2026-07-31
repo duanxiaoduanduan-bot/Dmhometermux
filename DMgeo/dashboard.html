@@ -888,7 +888,7 @@ function drawWorldMap(ctx,W,H,worldGeo,data){
   for(var i=0;i<worldGeo.features.length;i++){
     paintBase(ctx,worldGeo.features[i],W,H,scale,ox,oy);
   }
-  // 发光：有数据的国家叠加发光填充(不再整面实蓝)
+  // 实心蓝：有数据的国家叠加实心蓝选中填充(非光晕)
   for(var i=0;i<worldGeo.features.length;i++){
     var f=worldGeo.features[i];
     var name=f.properties.name;
@@ -896,10 +896,10 @@ function drawWorldMap(ctx,W,H,worldGeo,data){
     var lookupName=(name==='Taiwan')?'China':name;
     var total=totalMap[lookupName]||0;
     if(total===0)continue;
-    paintGlow(ctx,f,W,H,scale,ox,oy,total/maxTotal);
+    paintSolid(ctx,f,W,H,scale,ox,oy,total/maxTotal);
   }
 
-  // Glow markers for lit countries — 即便城市国家(新加坡等)几何极小，也能看见"亮"
+  // 实心蓝标记点 — 城市国家(新加坡等)几何极小，用实心点保证可见(非光晕)
   for(var i=0;i<worldGeo.features.length;i++){
     var f=worldGeo.features[i];
     var name=f.properties.name;
@@ -911,12 +911,10 @@ function drawWorldMap(ctx,W,H,worldGeo,data){
     var pt=project(centroid[0],centroid[1],W,H,scale,ox,oy);
     if(pt.x<0||pt.x>W||pt.y<0||pt.y>H)continue;
     var r=3+intensity*5;
-    // 外圈光晕
-    ctx.beginPath();ctx.arc(pt.x,pt.y,r*2.4,0,Math.PI*2);
-    ctx.fillStyle='rgba(140,220,255,'+(0.18+intensity*0.30)+')';ctx.fill();
-    // 核心亮点
+    // 实心蓝点 + 亮边(选中效果)
     ctx.beginPath();ctx.arc(pt.x,pt.y,r,0,Math.PI*2);
-    ctx.fillStyle='rgba(200,248,255,'+(0.9+intensity*0.1)+')';ctx.fill();
+    ctx.fillStyle='rgba(40,140,255,0.92)';ctx.fill();
+    ctx.lineWidth=1.2;ctx.strokeStyle='rgba(200,248,255,0.95)';ctx.stroke();
     // 标签
     ctx.fillStyle='#fff';ctx.font='bold 7px sans-serif';ctx.textAlign='center';
     ctx.fillText(name.substring(0,12),pt.x,pt.y-r-4);
@@ -1107,13 +1105,13 @@ function drawCountryMap(ctx,W,H,provGeo,data){
   for(var i=0;i<provGeo.features.length;i++){
     paintBase(ctx,provGeo.features[i],W,H,scale,ox,oy);
   }
-  // 发光：有数据的省份叠加发光填充(不再整面实蓝)
+  // 实心蓝：有数据的省份叠加实心蓝选中填充(非光晕)
   for(var i=0;i<provGeo.features.length;i++){
     var f=provGeo.features[i];
     var name=f.properties.name;
     var total=totalMap[name]||0;
     if(total===0)continue;
-    paintGlow(ctx,f,W,H,scale,ox,oy,total/maxTotal);
+    paintSolid(ctx,f,W,H,scale,ox,oy,total/maxTotal);
   }
   // 有数据省份的标签
   for(var i=0;i<provGeo.features.length;i++){
@@ -1175,13 +1173,13 @@ function drawProvinceMap(ctx,W,H,geo,prov){
   for(var i=0;i<geo.features.length;i++){
     paintBase(ctx,geo.features[i],W,H,scale,ox,oy);
   }
-  // 发光：有数据的城市叠加发光填充(不再整面实蓝)
+  // 实心蓝：有数据的城市叠加实心蓝选中填充(非光晕)
   for(var i=0;i<geo.features.length;i++){
     var f=geo.features[i];
     var name=f.properties.name;
     var total=totalMap[name]||0;
     if(total===0)continue;
-    paintGlow(ctx,f,W,H,scale,ox,oy,total/maxTotal);
+    paintSolid(ctx,f,W,H,scale,ox,oy,total/maxTotal);
   }
 
   // City labels (only for cities with data)
@@ -1240,15 +1238,14 @@ function paintBase(ctx,f,W,H,scale,ox,oy){
   ctx.restore();
 }
 // 发光填充：有数据的区域叠发光（半透填充 + 光晕 + 亮边），不再整面实蓝
-function paintGlow(ctx,f,W,H,scale,ox,oy,intensity){
+// 实心蓝“选中”填充：有数据的区域用实心蓝 + 亮边(非光晕)，即用户要的“选中类发光”效果
+function paintSolid(ctx,f,W,H,scale,ox,oy,intensity){
   intensity=intensity||0;
   ctx.save();
   ctx.globalAlpha=1;
-  ctx.shadowColor='rgba(120,220,255,0.95)';
-  ctx.shadowBlur=10+intensity*26;
-  ctx.fillStyle='rgba(120,215,255,'+(0.16+intensity*0.34)+')';
-  ctx.strokeStyle='rgba(196,246,255,'+(0.82+intensity*0.18)+')';
-  ctx.lineWidth=0.8+intensity*1.6;
+  ctx.fillStyle='rgba(40,140,255,'+(0.60+intensity*0.35)+')';
+  ctx.strokeStyle='rgba(170,225,255,'+(0.85+intensity*0.15)+')';
+  ctx.lineWidth=0.9+intensity*1.5;
   drawGeoFeature(ctx,f,W,H,scale,ox,oy);
   ctx.restore();
 }
