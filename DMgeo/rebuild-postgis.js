@@ -9,11 +9,18 @@ const DATA_DIR = path.join(__dirname, 'geodata', 'standard');
 async function main() {
   console.log('🔄 开始重建 PostGIS 地理数据...\n');
 
+  // ===== 0. 确保表存在（通用 GEOMETRY 类型，避免 geotype 约束把退化几何整行判失败）=====
+  await pgPool.query(`CREATE TABLE IF NOT EXISTS countries (id SERIAL PRIMARY KEY, name TEXT, geom GEOMETRY(GEOMETRY,4326) NOT NULL)`);
+  await pgPool.query(`CREATE TABLE IF NOT EXISTS provinces (id SERIAL PRIMARY KEY, name TEXT, code TEXT, geom GEOMETRY(GEOMETRY,4326))`);
+  await pgPool.query(`CREATE TABLE IF NOT EXISTS cities (id SERIAL PRIMARY KEY, name TEXT, province_code TEXT, code TEXT, geom GEOMETRY(GEOMETRY,4326))`);
+  await pgPool.query(`CREATE INDEX IF NOT EXISTS idx_countries_geom ON countries USING GIST (geom)`);
+
   // ===== 1. 清空旧表 =====
   console.log('1/4 清空旧数据...');
-  await pgPool.query('DELETE FROM cities');
-  await pgPool.query('DELETE FROM provinces');
-  await pgPool.query('DELETE FROM countries');
+  for (const t of ['cities', 'provinces', 'countries']) {
+    try { await pgPool.query(`DELETE FROM ${t}`); }
+    catch (e) { console.log(`  (跳过清空 ${t}: ${e.message})`); }
+  }
   console.log('   ✅ 已清空 countries, provinces, cities\n');
 
   // ===== 2. 导入国家数据 (Natural Earth via datasets/geo-countries, 已 -makevalid) =====

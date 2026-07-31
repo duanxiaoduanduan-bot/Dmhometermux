@@ -63,17 +63,30 @@ function normalize(src) {
   fs.writeFileSync(OUT, JSON.stringify(fc));
   console.log('[2] 已写入本地', OUT, '(', features.length, '国 )');
 
-  console.log('[3] 导入 PostGIS countries 表 ...');
+  console.log('[3] 导入 PostGIS countries 表（库: dmpageo）...');
+  // 还原原始引用：世界国界落 dmpageo（与 rebuild-postgis.js 一致）。
+  // dmpageo 库由 install/02-postgis.sh 创建并启用 postgis 扩展。
   const pool = new Pool({ database: 'dmpageo', user: 'dmuser', password: 'dmpageo123' });
+  // 确保表存在：用通用 GEOMETRY 类型，避免 GEOMETRY(MULTIPOLYGON) 的 enforce_geotype 约束
+  // 把部分退化几何（纯线/点，经 MakeValid 后 CollectionExtract 取不到多边形）整行判为约束违例。
+  await pool.query(`CREATE TABLE IF NOT EXISTS countries (
+    id SERIAL PRIMARY KEY,
+    name TEXT,
+    geom GEOMETRY(GEOMETRY, 4326) NOT NULL
+  )`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_countries_geom ON countries USING GIST (geom)`);
   await pool.query('DELETE FROM countries');
-  let ok = 0, fail = 0;
+  let ok = 0, fail = 0, skipped = 0;
   for (const f of features) {
-    if (!f.geometry) continue;
+    if (!f.geometry) { skipped++; continue; }
     try {
-      await pool.query(
-        `INSERT INTO countries(name, geom) VALUES($1, ST_Multi(ST_CollectionExtract(ST_MakeValid(ST_SetSRID(ST_GeomFromGeoJSON($2),4326)),3)))`,
+      // WHERE 守卫：退化几何经 MakeValid/CollectionExtract 后可能返回 NULL，跳过而非触发 NOT NULL 约束
+      const r = await pool.query(
+        `INSERT INTO countries(name, geom)
+         SELECT $1, ST_Multi(ST_CollectionExtract(ST_MakeValid(ST_SetSRID(ST_GeomFromGeoJSON($2),4326)),3))
+         WHERE ST_GeomFromGeoJSON($2) IS NOT NULL`,
         [f.properties.name, JSON.stringify(f.geometry)]);
-      ok++;
+      if (r.rowCount > 0) ok++; else skipped++;
     } catch (e) { fail++; if (fail <= 5) console.warn('    插入失败', f.properties.name, e.message); }
   }
   const cnt = await pool.query('SELECT count(*) FROM countries');

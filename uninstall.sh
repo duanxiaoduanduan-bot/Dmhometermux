@@ -130,7 +130,7 @@ if [ "$DO_DROP_DB" -eq 1 ]; then
     # termux：PG 由 dm-postgis runit 服务托管，当前用户即超级用户，直连 socket
     runit_up dm-postgis >/dev/null 2>&1 || true
     for i in $(seq 1 15); do pg_isready -q 2>/dev/null && break; sleep 1; done
-    for db in trip Basemap; do
+    for db in trip Basemap dmpageo; do
       info "删除数据库: $db"
       psql -d postgres -c "DROP DATABASE IF EXISTS \"$db\"" 2>/dev/null \
         || warn "  删除 $db 失败（可手动: dropdb $db）"
@@ -141,7 +141,7 @@ if [ "$DO_DROP_DB" -eq 1 ]; then
     # 临时起库以便 drop
     pg_ctlcluster "$PGVER" main start 2>/dev/null || true
     sleep 2
-    for db in trip Basemap; do
+    for db in trip Basemap dmpageo; do
       info "删除数据库: $db"
       su postgres -c "psql -c \"DROP DATABASE IF EXISTS \\\"$db\\\"\"" 2>/dev/null \
         || sudo -u postgres psql -c "DROP DATABASE IF EXISTS \"$db\"" 2>/dev/null \

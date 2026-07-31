@@ -93,7 +93,7 @@ info "创建角色: $PGUSER ..."
 psql -d postgres -v ON_ERROR_STOP=0 -c "DO \$\$ BEGIN IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname='$PGUSER') THEN CREATE ROLE $PGUSER LOGIN PASSWORD '$PGPASS' CREATEDB; END IF; END \$\$;" 2>/dev/null \
   || warn "创建角色失败（可能已存在）"
 
-for db in trip Basemap; do
+for db in trip Basemap dmpageo; do
   info "确保库: $db"
   psql -d postgres -v ON_ERROR_STOP=0 -c "CREATE DATABASE \"$db\" OWNER $PGUSER" 2>/dev/null || true
   # postgis 扩展只能由超级用户创建。$PGUSER 仅 CREATEDB 非超级用户，CREATE EXTENSION 必失败，
