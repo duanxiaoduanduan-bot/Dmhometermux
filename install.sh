@@ -97,7 +97,7 @@ list_stages() {
 
   5. start    $INSTALL_DIR/04-start.sh
               → 确保 DM 在跑
-              → supervisorctl start 业务程序
+              → termux: runit(sv) 托管 / 普通 Linux: supervisorctl
 
 标记目录: $MARKER_DIR
 EOF
@@ -113,7 +113,10 @@ show_status() {
     fi
   done
   echo ""
-  if [ -S "$SUP_DIR/supervisor.sock" ] && have supervisorctl; then
+  if is_termux; then
+    info "runit 服务状态:"
+    runit_status_all | sed 's/^/    /'
+  elif [ -S "$SUP_DIR/supervisor.sock" ] && have supervisorctl; then
     info "supervisord 状态:"
     supervisorctl -c "$SUP_CONF" status 2>&1 || true
   else
@@ -191,7 +194,11 @@ run_all() {
   echo "🛠️  运维:"
   echo "   状态: ./install.sh status"
   echo "   只启某服务: ./install.sh start DMmedia"
-  echo "   supervisor: supervisorctl -c $SUP_CONF status"
+  if is_termux; then
+    echo "   runit: sv status \$PREFIX/var/service/dm-<服务名>"
+  else
+    echo "   supervisor: supervisorctl -c $SUP_CONF status"
+  fi
   echo ""
 }
 

@@ -9,8 +9,19 @@ source "$SCRIPT_DIR/common.sh"
 
 step "1/1 · 安装 DM 核心 (DMcore)"
 
-# —— 系统基础：supervisor / python3 / node（代理需要）——
-if need_root_apt; then
+# —— 系统基础：托管器 / python3 / node（代理需要）——
+# termux: 托管走 runit(termux-services)，supervisor 在 termux 不可用
+# （其 unix socket 依赖 os.link 硬链接，termux 所有目录 NO_HARDLINK，已验证死路）
+if is_termux; then
+  if ! have sv; then
+    info "安装 termux-services (runit) ..."
+    pkg_install termux-services || warn "termux-services 安装失败，服务托管不可用"
+  else
+    ok "runit(sv) 已存在"
+  fi
+  have python3 || { info "安装 python3 ..."; pkg_install python || error "需要 python3"; }
+  have node    || { info "安装 nodejs ...";  pkg_install nodejs  || warn "nodejs 安装失败：请手动安装后重跑"; }
+elif need_root_apt; then
   if ! have supervisord && ! have supervisorctl; then
     info "安装 supervisor ..."
     run_apt update -qq
@@ -78,40 +89,62 @@ fi
 
 # —— 配置与目录 ——
 ensure_config_json
-ensure_supervisord_conf
-# 按当前机器实际路径生成各服务托管配置（修复换机/换目录后路径失效）
-write_supervisor_programs
+if is_termux; then
+  # 按当前机器实际路径生成 runit 服务目录（修复换机/换目录后路径失效）
+  write_runit_services
+else
+  ensure_supervisord_conf
+  # 按当前机器实际路径生成各服务托管配置（修复换机/换目录后路径失效）
+  write_supervisor_programs
+fi
 
 # 可执行权限
 chmod +x "$ROOT/DMcore/run.sh" 2>/dev/null || true
 find "$ROOT" -maxdepth 2 -name 'dmcore-start.sh' -exec chmod +x {} \; 2>/dev/null || true
 chmod +x "$ROOT/install.sh" "$ROOT/install/"*.sh 2>/dev/null || true
 
-# —— 可选：拉起 supervisord 空实例（不强制 start all）——
-if have supervisord; then
-  if [ ! -S "$SUP_DIR/supervisor.sock" ]; then
-    info "启动 DMcore 独立 supervisord（空托管，按需 start 子服务）..."
-    supervisord -c "$SUP_CONF" 2>/dev/null || true
-    sleep 1
-  else
-    ok "supervisord 已在运行"
+if is_termux; then
+  # —— termux：DMcore 直接交 runit 托管 ——
+  info "runit 拉起 DMcore ..."
+  runit_up dm-DMcore
+else
+  # —— 可选：拉起 supervisord 空实例（不强制 start all）——
+  if have supervisord; then
+    if [ ! -S "$SUP_DIR/supervisor.sock" ]; then
+      info "启动 DMcore 独立 supervisord（空托管，按需 start 子服务）..."
+      supervisord -c "$SUP_CONF" 2>/dev/null || true
+      sleep 1
+    else
+      ok "supervisord 已在运行"
+    fi
   fi
-fi
 
-# —— 启动 DM 控制台 + 代理 ——
-start_dmcore_processes
+  # —— 启动 DM 控制台 + 代理 ——
+  start_dmcore_processes
+fi
 sleep 1
 
 # 健康检查（DMcore 是全家族入口，起不来必须立刻失败，不能假完成）
+# 手机上 Flask 冷启动可能要十几秒，必须轮询而不是一次性判定（单次判定会误报失败）。
 PORT="${DMCORE_PORT:-8088}"
-sleep 2
 if have curl; then
-  if curl -sf "http://127.0.0.1:${PORT}/api/health" >/dev/null 2>&1 \
-    || curl -sf "http://127.0.0.1:${PORT}/" >/dev/null 2>&1; then
+  DM_OK=0
+  for _i in $(seq 1 25); do
+    if curl -sf "http://127.0.0.1:${PORT}/api/health" >/dev/null 2>&1 \
+      || curl -sf "http://127.0.0.1:${PORT}/" >/dev/null 2>&1; then
+      DM_OK=1; break
+    fi
+    sleep 1
+  done
+  if [ "$DM_OK" = "1" ]; then
     ok "DMcore 响应正常 :${PORT}"
   else
-    echo "—— /tmp/dmcore.log 尾部 ——"
-    tail -15 /tmp/dmcore.log 2>/dev/null || echo "(无日志)"
+    echo "—— DMcore 日志尾部 ——"
+    if is_termux; then
+      tail -15 "${PREFIX}/var/log/sv/dm-DMcore/current" 2>/dev/null || echo "(无日志)"
+    else
+      tail -15 /tmp/dmcore.log 2>/dev/null || echo "(无日志)"
+    fi
     echo "———————————————"
     error "DMcore 未响应 :${PORT}（常见原因: Flask 未装上——重跑 ./install.sh dm 会重建 venv 并重装）"
   fi

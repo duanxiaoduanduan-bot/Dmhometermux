@@ -65,9 +65,18 @@ confirm() {
 step "dm-family 卸载"
 confirm
 
-# ── 1. 停止 supervisord 托管的全部程序 ──
+# ── 1. 停止托管的全部程序 ──
 step "1/4 · 停止托管服务"
-if [ -S "$SUP_DIR/supervisor.sock" ] && have supervisorctl; then
+if is_termux; then
+  # runit：down 全部 dm-* 服务，并落 down 文件防止 runsvdir 重新拉起
+  for svc in "$SV_DIR"/dm-*; do
+    [ -d "$svc" ] || continue
+    touch "$svc/down" 2>/dev/null || true
+    sv down "$svc" 2>/dev/null || true
+    info "  已停: $(basename "$svc")"
+  done
+  ok "runit 托管服务已停止"
+elif [ -S "$SUP_DIR/supervisor.sock" ] && have supervisorctl; then
   supervisorctl -c "$SUP_CONF" stop all 2>/dev/null || true
   supervisorctl -c "$SUP_CONF" shutdown 2>/dev/null || true
   ok "supervisord 已停止"
@@ -117,21 +126,38 @@ if [ "$DO_PURGE" -eq 1 ]; then
 fi
 
 if [ "$DO_DROP_DB" -eq 1 ]; then
-  PGVER="$(detect_pgver)"
-  # 临时起库以便 drop
-  pg_ctlcluster "$PGVER" main start 2>/dev/null || true
-  sleep 2
-  for db in trip Basemap; do
-    info "删除数据库: $db"
-    su postgres -c "psql -c \"DROP DATABASE IF EXISTS \\\"$db\\\"\"" 2>/dev/null \
-      || sudo -u postgres psql -c "DROP DATABASE IF EXISTS \"$db\"" 2>/dev/null \
-      || warn "  删除 $db 失败（可手动: sudo -u postgres dropdb $db）"
-  done
-  ok "数据库已删除（角色 $PGUSER 保留；PG 软件保留）"
+  if is_termux; then
+    # termux：PG 由 dm-postgis runit 服务托管，当前用户即超级用户，直连 socket
+    runit_up dm-postgis >/dev/null 2>&1 || true
+    for i in $(seq 1 15); do pg_isready -q 2>/dev/null && break; sleep 1; done
+    for db in trip Basemap; do
+      info "删除数据库: $db"
+      psql -d postgres -c "DROP DATABASE IF EXISTS \"$db\"" 2>/dev/null \
+        || warn "  删除 $db 失败（可手动: dropdb $db）"
+    done
+    ok "数据库已删除（角色 $PGUSER 保留；PG 软件保留）"
+  else
+    PGVER="$(detect_pgver)"
+    # 临时起库以便 drop
+    pg_ctlcluster "$PGVER" main start 2>/dev/null || true
+    sleep 2
+    for db in trip Basemap; do
+      info "删除数据库: $db"
+      su postgres -c "psql -c \"DROP DATABASE IF EXISTS \\\"$db\\\"\"" 2>/dev/null \
+        || sudo -u postgres psql -c "DROP DATABASE IF EXISTS \"$db\"" 2>/dev/null \
+        || warn "  删除 $db 失败（可手动: sudo -u postgres dropdb $db）"
+    done
+    ok "数据库已删除（角色 $PGUSER 保留；PG 软件保留）"
+  fi
 fi
 
 if [ "$DO_WITH_PG" -eq 1 ]; then
-  if need_root_apt; then
+  if is_termux; then
+    info "停止并卸载 PostgreSQL / PostGIS (termux) ..."
+    [ -d "$SV_DIR/dm-postgis" ] && { touch "$SV_DIR/dm-postgis/down" 2>/dev/null || true; sv down "$SV_DIR/dm-postgis" 2>/dev/null || true; }
+    pkg uninstall -y postgis postgresql 2>/dev/null || warn "pkg 卸载有残留"
+    ok "PostgreSQL 已卸载（数据目录 \$PREFIX/var/lib/postgresql 保留，需手动删）"
+  elif need_root_apt; then
     info "卸载 PostgreSQL / PostGIS ..."
     pg_ctlcluster "$(detect_pgver)" main stop 2>/dev/null || true
     run_apt remove -y --purge 'postgresql*' 2>/dev/null || warn "apt remove 有残留"
@@ -146,7 +172,11 @@ echo ""
 echo "================================================"
 echo "  ✅ dm-family 卸载完成"
 echo "================================================"
-echo "  已停: supervisord 托管 + DMcore(:8088) + 代理(:8080)"
+if is_termux; then
+  echo "  已停: runit 托管(dm-*) + DMcore(:8088) + 代理(:8080)"
+else
+  echo "  已停: supervisord 托管 + DMcore(:8088) + 代理(:8080)"
+fi
 echo "  已清: 安装标记 $MARKER_DIR"
 [ "$DO_PURGE" -eq 1 ]    && echo "  已清: node_modules / 运行时产物"
 [ "$DO_DROP_DB" -eq 1 ]  && echo "  已删: 数据库 trip / Basemap"

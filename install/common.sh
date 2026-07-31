@@ -124,7 +124,8 @@ write_supervisor_programs() {
   # 服务名|目录|运行用户(supervisor user,空=随 supervisord)|额外环境变量
   # 注意：dm-postgis 必须 root——它要 su postgres / pg_ctlcluster 起 PG，
   # 非 root 且无 NOPASSWD sudo 时会失败。其余服务随 supervisord 身份即可。
-  # termux 上 PG 跑在 proot Ubuntu(ubuntu-rootfs) 内，不由本机 supervisord 托管，故排除。
+  # termux 上走 runit（见 write_runit_services），PG 由 02-postgis.sh 注册为
+  # runit 服务 dm-postgis，故此处（supervisord 路径）排除。
   local specs=(
     "DMmedia|DMmedia||DM_PORT=\"8081\""
     "DMgeo|DMgeo||PGHOST=\"localhost\""
@@ -161,6 +162,106 @@ environment=PATH="${base_path}",NODE_BIN="${node_bin}",DMCORE_HOST="0.0.0.0"${ex
 PROGCONF
   done
   ok "supervisor programs 已按当前路径生成: $SUP_DIR/programs/"
+}
+
+# ── runit（termux 宿主方案）──
+# termux-services 启用后会有一个 runsvdir 进程扫描 $PREFIX/var/service，
+# 自动为每个子目录派生 runsv —— 这是服务"重启后自动恢复"的来源。
+# 但 termux 不是 init 系统：runsvdir 只在 termux 登录 shell 加载过 termux-services
+# 时才存在（刚装完包、纯 SSH 非交互场景可能没有），此时必须自己起 runsv 兜底。
+# 两种情况都要兼容，见 runit_up。
+SV_DIR="${SV_DIR:-${PREFIX:-/data/data/com.termux/files/usr}/var/service}"
+
+# runsvdir 是否正在托管 $SV_DIR（决定 runsv 由它派生还是我们自己起）
+runsvdir_active() {
+  pgrep -f "runsvdir .*${SV_DIR}" >/dev/null 2>&1
+}
+
+# 生成各 DM 服务的 runit 服务目录（$SV_DIR/dm-<name>/run + log/run）
+# dm-postgis 由 02-postgis.sh 单独注册，这里只管应用服务。
+write_runit_services() {
+  local node_bin base_path
+  node_bin="$(command -v node 2>/dev/null || echo node)"
+  base_path="${PREFIX:-/data/data/com.termux/files/usr}/bin:/system/bin:/system/xbin"
+  local logroot="${PREFIX:-/data/data/com.termux/files/usr}/var/log/sv"
+
+  # 服务名|目录|额外环境变量(export 语句)
+  local specs=(
+    "DMmedia|DMmedia|export DM_PORT=8081"
+    "DMgeo|DMgeo|export PGHOST=localhost"
+    "DMpageo|DMpageo|"
+    "DMChat|DMChat|"
+    "DMshow|DMshow|"
+    "DMcore|DMcore|export DMCORE_PORT=8088"
+  )
+  local entry name dir extra svc
+  for entry in "${specs[@]}"; do
+    IFS='|' read -r name dir extra <<< "$entry"
+    [ -d "$ROOT/$dir" ] || continue
+    svc="$SV_DIR/dm-${name}"
+    mkdir -p "$svc/log" "$logroot/dm-${name}"
+    cat > "$svc/run" <<RUNSCRIPT
+#!/bin/sh
+export PATH="${base_path}"
+export NODE_BIN="${node_bin}"
+export DMCORE_HOST="0.0.0.0"
+${extra}
+cd "$ROOT/$dir" || exit 1
+exec bash dmcore-start.sh 2>&1
+RUNSCRIPT
+    chmod +x "$svc/run"
+    cat > "$svc/log/run" <<LOGSCRIPT
+#!/bin/sh
+exec svlogd -tt "$logroot/dm-${name}"
+LOGSCRIPT
+    chmod +x "$svc/log/run"
+  done
+  ok "runit 服务已生成: $SV_DIR/dm-*  (日志: $logroot/)"
+}
+
+# 确保某个 runit 服务有 runsv 实例托管并处于 up 状态（幂等）
+runit_up() {
+  local name="$1" svc="$SV_DIR/$1" i
+  [ -d "$svc" ] || { warn "服务不存在: $svc"; return 1; }
+  rm -f "$svc/down" 2>/dev/null || true
+
+  if runsvdir_active; then
+    # runsvdir 自动派生 runsv，但扫描是轮询（约 5s 一轮），新建目录不会立刻被接管。
+    # 等 supervise/control 出现再 sv up，否则 sv 会报 "runsv not running"。
+    for i in $(seq 1 20); do
+      [ -S "$svc/supervise/control" ] && break
+      sleep 1
+    done
+  elif ! pgrep -f "runsv $svc\$" >/dev/null 2>&1; then
+    # 无 runsvdir（未加载 termux-services）：自己起一个 runsv 兜底
+    setsid runsv "$svc" >/dev/null 2>&1 &
+    sleep 2
+  fi
+  # sv 必须用绝对路径：termux 的 SVDIR 默认值并不指向 $PREFIX/var/service
+  sv up "$svc" 2>/dev/null || true
+
+  # 等待真正进入 run 状态（起不来时返回非 0，让调用方能感知失败）
+  for i in $(seq 1 15); do
+    sv status "$svc" 2>/dev/null | grep -q '^run:' && return 0
+    sleep 1
+  done
+  return 1
+}
+
+# 停止某个 runit 服务（保留 runsv 实例，只 down 业务进程）
+runit_down() {
+  local svc="$SV_DIR/$1"
+  [ -d "$svc" ] || return 0
+  sv down "$svc" 2>/dev/null || true
+}
+
+# 所有 dm-* runit 服务状态
+runit_status_all() {
+  local svc
+  for svc in "$SV_DIR"/dm-*; do
+    [ -d "$svc" ] || continue
+    sv status "$svc" 2>&1 || true
+  done
 }
 
 ensure_config_json() {

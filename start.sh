@@ -14,6 +14,15 @@
 # ============================================================
 set -e
 
+SELF_DIR="$(cd "$(dirname "$0")" && pwd)"
+
+# ---- termux/Android：无 root、无 supervisord，走 runit 路径 ----
+# 直接委托给 install.sh start（内部按 is_termux 选择 runit 托管）
+if [ -n "${PREFIX:-}" ] && [ -d /data/data/com.termux/files/usr ]; then
+  echo "[start] 检测到 Termux，改用 ./install.sh start（runit 托管）"
+  exec bash "$SELF_DIR/install.sh" start "$@"
+fi
+
 # 非 root 自动提权（dm-postgis 起 PG 需要 root）
 if [ "$EUID" -ne 0 ]; then
   exec sudo bash "$0" "$@"

@@ -1,8 +1,10 @@
 #!/usr/bin/env bash
-# 04-start.sh — 启动 supervisord 托管的业务服务 + 确保 DM 在跑
+# 04-start.sh — 启动业务服务 + 确保 DM 在跑
+#   termux 宿主: runit（每服务一个 runsv 实例，同 termux 官方 postgres/sshd 机制）
+#   普通 Linux : supervisord（原逻辑不变）
 # 用法:
-#   ./install.sh start           # 启动全部 program
-#   ./install.sh start DMmedia   # 只启动指定（匹配 program 名）
+#   ./install.sh start           # 启动全部服务
+#   ./install.sh start DMmedia   # 只启动指定服务
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -12,6 +14,64 @@ source "$SCRIPT_DIR/common.sh"
 step "启动服务"
 
 ensure_config_json
+
+# ── termux：runit 托管 ──
+if is_termux; then
+  export PREFIX="${PREFIX:-/data/data/com.termux/files/usr}"
+  write_runit_services
+
+  # dm-postgis 先起（应用依赖 PG）
+  if [ -d "$SV_DIR/dm-postgis" ]; then
+    runit_up dm-postgis
+    for i in $(seq 1 15); do pg_isready -q 2>/dev/null && break; sleep 1; done
+    pg_isready -q 2>/dev/null && ok "PostgreSQL 就绪" || warn "PostgreSQL 未就绪（应用可能连库失败）"
+  fi
+
+  if [ "$#" -eq 0 ]; then
+    info "启动全部 DM 服务 ..."
+    for svc in "$SV_DIR"/dm-*; do
+      [ -d "$svc" ] || continue
+      runit_up "$(basename "$svc")"
+    done
+  else
+    for t in "$@"; do
+      case "$t" in
+        core|DMcore)        t=dm-DMcore ;;
+        postgis|dm-postgis) t=dm-postgis ;;
+        media|DMmedia)      t=dm-DMmedia ;;
+        geo|DMgeo)          t=dm-DMgeo ;;
+        pageo|DMpageo)      t=dm-DMpageo ;;
+        chat|DMChat)        t=dm-DMChat ;;
+        show|DMshow)        t=dm-DMshow ;;
+        dm-*)               ;;
+        *)                  t="dm-$t" ;;
+      esac
+      info "启动 $t ..."
+      runit_up "$t" || warn "启动失败: $t"
+    done
+  fi
+
+  sleep 3
+  echo ""
+  info "当前状态:"
+  runit_status_all | sed 's/^/    /'
+
+  print_dm_banner
+  if [ -f "$ROOT/ports.json" ]; then
+    echo "📋 端口:"
+    sed 's/^/   /' "$ROOT/ports.json" 2>/dev/null || true
+  fi
+  echo "🛠️  运维:"
+  echo "   状态: sv status $SV_DIR/dm-<服务名>"
+  echo "   停止: sv down   $SV_DIR/dm-<服务名>"
+  echo "   日志: tail -f $PREFIX/var/log/sv/dm-<服务名>/current"
+  echo ""
+  mark_done "start"
+  ok "启动阶段完成 (runit)"
+  exit 0
+fi
+
+# ── 普通 Linux：supervisord 托管（原逻辑）──
 ensure_supervisord_conf
 # 目录可能搬迁过，启动前重建 program 配置（幂等）
 write_supervisor_programs
