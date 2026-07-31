@@ -1251,6 +1251,7 @@ function paintSolid(ctx,f,W,H,scale,ox,oy,intensity){
 }
 
 function drawGeoFeature(ctx,f,W,H,scale,ox,oy){
+  if(!f||!f.geometry||!f.geometry.type)return; // 跳过无几何 feature(微型国家 geom 为 null)
   var geom=f.geometry;
   if(geom.type==='Polygon'){
     for(var i=0;i<geom.coordinates.length;i++){
@@ -1494,6 +1495,7 @@ function setupMapEvents(W,H){
 }
 
 function pointInFeature(px,py,f,W,H){
+  if(!f||!f.geometry||!f.geometry.type)return false; // 跳过无几何 feature, 防止遍历崩溃导致点击命中全乱
   var geom=f.geometry;
   var scale=_mapView.scale,ox=_mapView.offsetX,oy=_mapView.offsetY;
   var rings=[];
