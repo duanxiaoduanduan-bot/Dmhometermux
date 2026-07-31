@@ -527,6 +527,8 @@ function renderBreadcrumb(rv){
 
 function goRegionLevel(level,countryName,provIdx,cityIdx){
   _regionView={level:level,countryName:countryName||null,provIdx:provIdx!=null?provIdx:null,cityIdx:cityIdx!=null?cityIdx:null};
+  _mapHovered=null; // 切换层级清空悬停，避免旧层级残留的 hovered 触发误下钻(如点到别的省)
+  _mapGeoData=null; // 待新层级几何加载完成再赋值，避免用旧几何做点击命中
   _mapUserPanned=false; // 新层级进入，允许自动适配画布
   // 回到世界时自动复位缩放
   if(level===0){
@@ -882,8 +884,11 @@ function drawWorldMap(ctx,W,H,worldGeo,data){
     if(totalMap[c.name]>maxTotal)maxTotal=totalMap[c.name];
   }
 
-  // Draw world countries — Taiwan drawn as part of China
-  // First pass: draw glow for countries with data
+  // 底图：所有国家先画“正常基底”(可见，世界国界始终清晰)
+  for(var i=0;i<worldGeo.features.length;i++){
+    paintBase(ctx,worldGeo.features[i],W,H,scale,ox,oy);
+  }
+  // 发光：有数据的国家叠加发光填充(不再整面实蓝)
   for(var i=0;i<worldGeo.features.length;i++){
     var f=worldGeo.features[i];
     var name=f.properties.name;
@@ -891,31 +896,7 @@ function drawWorldMap(ctx,W,H,worldGeo,data){
     var lookupName=(name==='Taiwan')?'China':name;
     var total=totalMap[lookupName]||0;
     if(total===0)continue;
-    var intensity=total/maxTotal;
-    ctx.lineWidth=2+intensity*4;
-    ctx.strokeStyle='rgba(140,210,255,'+(0.08+intensity*0.1)+')';
-    ctx.fillStyle='rgba(140,210,255,'+(0.12+intensity*0.15)+')';
-    drawGeoFeature(ctx,f,W,H,scale,ox,oy);
-  }
-  // Second pass: draw all countries normally
-  for(var i=0;i<worldGeo.features.length;i++){
-    var f=worldGeo.features[i];
-    var name=f.properties.name;
-    // Treat Taiwan as China
-    var lookupName=(name==='Taiwan')?'China':name;
-    var total=totalMap[lookupName]||0;
-    if(total>0){
-      var intensity=total/maxTotal;
-      ctx.lineWidth=0.8;
-      ctx.fillStyle='rgba(140,220,255,'+(0.6+intensity*0.35)+')';
-      ctx.strokeStyle='rgba(190,245,255,'+(0.9+intensity*0.1)+')';
-    } else {
-      ctx.lineWidth=0.7;
-      ctx.fillStyle='rgba(35,45,80,.65)';
-      ctx.strokeStyle='rgba(75,120,190,.75)';
-    }
-    ctx.globalAlpha=1;
-    drawGeoFeature(ctx,f,W,H,scale,ox,oy);
+    paintGlow(ctx,f,W,H,scale,ox,oy,total/maxTotal);
   }
 
   // Glow markers for lit countries — 即便城市国家(新加坡等)几何极小，也能看见"亮"
@@ -1122,36 +1103,23 @@ function drawCountryMap(ctx,W,H,provGeo,data){
     if(p.total>maxTotal)maxTotal=p.total;
   }
 
-  // Draw provinces — first pass glow, second pass fill
+  // 底图：所有省份先画“正常基底”(可见，中国矢量始终清晰)
+  for(var i=0;i<provGeo.features.length;i++){
+    paintBase(ctx,provGeo.features[i],W,H,scale,ox,oy);
+  }
+  // 发光：有数据的省份叠加发光填充(不再整面实蓝)
   for(var i=0;i<provGeo.features.length;i++){
     var f=provGeo.features[i];
     var name=f.properties.name;
     var total=totalMap[name]||0;
     if(total===0)continue;
-    var intensity=total/maxTotal;
-    ctx.lineWidth=2+intensity*4;
-    ctx.strokeStyle='rgba(140,210,255,'+(0.08+intensity*0.1)+')';
-    ctx.fillStyle='rgba(140,210,255,'+(0.12+intensity*0.15)+')';
-    drawGeoFeature(ctx,f,W,H,scale,ox,oy);
+    paintGlow(ctx,f,W,H,scale,ox,oy,total/maxTotal);
   }
+  // 有数据省份的标签
   for(var i=0;i<provGeo.features.length;i++){
     var f=provGeo.features[i];
     var name=f.properties.name;
     var total=totalMap[name]||0;
-    if(total>0){
-      var intensity=total/maxTotal;
-      ctx.lineWidth=0.8;
-      ctx.fillStyle='rgba(140,220,255,'+(0.6+intensity*0.35)+')';
-      ctx.strokeStyle='rgba(190,245,255,'+(0.9+intensity*0.1)+')';
-    } else {
-      ctx.lineWidth=0.8;
-      ctx.fillStyle='rgba(40,60,110,.50)';
-      ctx.strokeStyle='rgba(90,145,210,.70)';
-    }
-    ctx.globalAlpha=1;
-    drawGeoFeature(ctx,f,W,H,scale,ox,oy);
-
-    // Label for provinces with data
     if(total>0){
       var centroid=getCentroid(f);
       var pt=project(centroid[0],centroid[1],W,H,scale,ox,oy);
@@ -1159,7 +1127,7 @@ function drawCountryMap(ctx,W,H,provGeo,data){
         var label=name.replace(/省|市|自治区|维吾尔|回族|壮族/g,'').substring(0,4);
         ctx.fillStyle='#fff';ctx.font='bold 8px sans-serif';ctx.textAlign='center';
         ctx.fillText(label,pt.x,pt.y-2);
-        ctx.fillStyle='#aaa';ctx.font='7px sans-serif';
+        ctx.fillStyle='#cfe6ff';ctx.font='7px sans-serif';
         ctx.fillText(total,pt.x,pt.y+8);
       }
     }
@@ -1203,34 +1171,17 @@ function drawProvinceMap(ctx,W,H,geo,prov){
     if(c.total>maxTotal)maxTotal=c.total;
   }
 
-  // Draw cities — first pass glow, second pass fill
+  // 底图：所有城市先画“正常基底”(可见)
+  for(var i=0;i<geo.features.length;i++){
+    paintBase(ctx,geo.features[i],W,H,scale,ox,oy);
+  }
+  // 发光：有数据的城市叠加发光填充(不再整面实蓝)
   for(var i=0;i<geo.features.length;i++){
     var f=geo.features[i];
     var name=f.properties.name;
     var total=totalMap[name]||0;
     if(total===0)continue;
-    var intensity=total/maxTotal;
-    ctx.lineWidth=2+intensity*4;
-    ctx.strokeStyle='rgba(140,210,255,'+(0.08+intensity*0.1)+')';
-    ctx.fillStyle='rgba(140,210,255,'+(0.12+intensity*0.15)+')';
-    drawGeoFeature(ctx,f,W,H,scale,ox,oy);
-  }
-  for(var i=0;i<geo.features.length;i++){
-    var f=geo.features[i];
-    var name=f.properties.name;
-    var total=totalMap[name]||0;
-    if(total>0){
-      var intensity=total/maxTotal;
-      ctx.lineWidth=0.7;
-      ctx.fillStyle='rgba(140,220,255,'+(0.6+intensity*0.35)+')';
-      ctx.strokeStyle='rgba(190,245,255,'+(0.9+intensity*0.1)+')';
-    } else {
-      ctx.lineWidth=0.5;
-      ctx.fillStyle='rgba(30,40,70,.45)';
-      ctx.strokeStyle='rgba(70,115,180,.65)';
-    }
-    ctx.globalAlpha=1;
-    drawGeoFeature(ctx,f,W,H,scale,ox,oy);
+    paintGlow(ctx,f,W,H,scale,ox,oy,total/maxTotal);
   }
 
   // City labels (only for cities with data)
@@ -1278,6 +1229,30 @@ function renderProvinceLegend(prov){
 }
 
 // ====== 绘制 GeoJSON Feature ======
+// 正常基底：无数据区域也清晰可见（保证中国矢量/世界国界始终在场）
+function paintBase(ctx,f,W,H,scale,ox,oy){
+  ctx.save();
+  ctx.globalAlpha=1;
+  ctx.fillStyle='rgba(72,98,152,.34)';
+  ctx.strokeStyle='rgba(132,172,232,.58)';
+  ctx.lineWidth=0.7;
+  drawGeoFeature(ctx,f,W,H,scale,ox,oy);
+  ctx.restore();
+}
+// 发光填充：有数据的区域叠发光（半透填充 + 光晕 + 亮边），不再整面实蓝
+function paintGlow(ctx,f,W,H,scale,ox,oy,intensity){
+  intensity=intensity||0;
+  ctx.save();
+  ctx.globalAlpha=1;
+  ctx.shadowColor='rgba(120,220,255,0.95)';
+  ctx.shadowBlur=10+intensity*26;
+  ctx.fillStyle='rgba(120,215,255,'+(0.16+intensity*0.34)+')';
+  ctx.strokeStyle='rgba(196,246,255,'+(0.82+intensity*0.18)+')';
+  ctx.lineWidth=0.8+intensity*1.6;
+  drawGeoFeature(ctx,f,W,H,scale,ox,oy);
+  ctx.restore();
+}
+
 function drawGeoFeature(ctx,f,W,H,scale,ox,oy){
   var geom=f.geometry;
   if(geom.type==='Polygon'){
