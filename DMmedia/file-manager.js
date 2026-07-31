@@ -63,18 +63,32 @@ function autoDiscover() {
     { name: '🏠 用户目录', path: os.homedir(), type: 'shortcut' },
   ];
 
-  const rootCandidates = [
-    { name: '📦 /workspace', path: '/workspace' },
-    { name: '🏠 /home', path: '/home' },
-    { name: '🔧 /root', path: '/root' },
-    { name: '📱 /storage', path: '/storage' },
-    { name: '💾 /mnt', path: '/mnt' },
-    { name: '📀 /media', path: '/media' },
-    { name: '💿 /run/media', path: '/run/media' },
-    { name: '📂 /opt', path: '/opt' },
-    { name: '📊 /var', path: '/var' },
-    { name: '🗂️ /srv', path: '/srv' },
-  ];
+  // Termux（Android）环境：列出真实可访问的根，避免物理机路径水土不服
+  const isTermux = (!!process.env.PREFIX && String(process.env.PREFIX).includes('com.termux')) || !!process.env.TERMUX_VERSION;
+  let rootCandidates;
+  if (isTermux) {
+    rootCandidates = [];
+    const home = os.homedir();
+    if (home) rootCandidates.push({ name: '🏠 用户目录', path: home });
+    const prefix = process.env.PREFIX;
+    if (prefix) rootCandidates.push({ name: '📂 Termux 环境', path: prefix });
+    rootCandidates.push({ name: '📱 /storage', path: '/storage' });
+    rootCandidates.push({ name: '📱 内部存储', path: '/storage/emulated/0' }); // 需 termux-setup-storage 授权
+  } else {
+    // 物理机 / 容器：原路径
+    rootCandidates = [
+      { name: '📦 /workspace', path: '/workspace' },
+      { name: '🏠 /home', path: '/home' },
+      { name: '🔧 /root', path: '/root' },
+      { name: '📱 /storage', path: '/storage' },
+      { name: '💾 /mnt', path: '/mnt' },
+      { name: '📀 /media', path: '/media' },
+      { name: '💿 /run/media', path: '/run/media' },
+      { name: '📂 /opt', path: '/opt' },
+      { name: '📊 /var', path: '/var' },
+      { name: '🗂️ /srv', path: '/srv' },
+    ];
+  }
 
   // Windows：把存在的盘符加入候选
   if (process.platform === 'win32') {
