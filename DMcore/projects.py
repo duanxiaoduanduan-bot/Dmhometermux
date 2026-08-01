@@ -55,6 +55,33 @@ PORT_RANGE_END   = 8099
 RESERVED_PORTS   = {8080, 8088}  # proxy 入口 + DMcore 自身，永不分配
 ROUTES_PATH = os.path.join(HERE, "routes.json")
 
+# ---- termux / runit 适配 ----
+# termux 上 DM 家族由 runit(termux-services) 托管，而非 DMcore 独立 supervisord 实例。
+# 状态查询与启停改走 `sv`(runit)，避免控制台把全部服务误显示成 STOPPED。
+TERMUX_PREFIX = "/data/data/com.termux/files/usr"
+SV_BIN = os.path.join(TERMUX_PREFIX, "bin", "sv")
+RUNIT_SVCDIR = os.path.join(TERMUX_PREFIX, "var", "service")
+
+def is_termux():
+    """termux 环境：存在 runit 的 sv 二进制与服务目录。"""
+    return os.path.exists(SV_BIN) and os.path.isdir(RUNIT_SVCDIR)
+
+def _runit_svc(name):
+    """返回 runit 服务目录全路径(若存在)。服务名 = dm-<name>，但若 name 已带 dm- 前缀则不重复。"""
+    svc_name = name if name.startswith("dm-") else "dm-" + name
+    svc = os.path.join(RUNIT_SVCDIR, svc_name)
+    return svc if os.path.isdir(svc) else None
+
+def _sv(args):
+    """执行 runit 的 sv 命令，返回 (returncode, output)。"""
+    if not os.path.exists(SV_BIN):
+        return 1, ""
+    try:
+        r = subprocess.run([SV_BIN] + args, capture_output=True, text=True, timeout=15)
+        return r.returncode, (r.stdout + r.stderr).strip()
+    except Exception as e:
+        return 1, str(e)
+
 
 def _used_ports():
     """返回所有已占用的端口：清单声明的 + ss 实际监听的 + 保留端口。"""
@@ -665,6 +692,9 @@ files = {SUP_DIR}/programs/*.conf
 
 def ensure_supervisor():
     """确保 DMcore 独立 supervisord 实例已运行(未运行则拉起)。返回是否就绪。"""
+    if is_termux():
+        # termux 上由 runit 托管，不需要 DMcore 独立 supervisord 实例
+        return True
     try:
         _write_supervisord_conf()
         os.makedirs(SUP_PROGRAMS, exist_ok=True)
@@ -759,6 +789,22 @@ environment={",".join(env_pairs)}
 
 
 def _status(name):
+    if is_termux():
+        # termux: 状态来自 runit(sv status)，而非 supervisord
+        svc = _runit_svc(name)
+        if not svc:
+            return {"managed": False, "state": "STOPPED", "pid": None}
+        rc, out = _sv(["status", svc])
+        out = (out or "").strip()
+        # runit 输出形如: "run: /path/dm-X: (pid 11903) 526s; run: log: (pid 11895) 526s"
+        if out.startswith("run:"):
+            pid = None
+            m = re.search(r"pid\s+(\d+)", out)
+            if m:
+                pid = int(m.group(1))
+            return {"managed": True, "state": "RUNNING", "pid": pid}
+        # down: / fail: 均视为已停止
+        return {"managed": True, "state": "STOPPED", "pid": None}
     rc, out = _sup(["status", _prog(name)])
     # 该定制版 supervisord 的 status 输出带 ANSI 颜色码, 且状态词为首字母大写
     # (如 "Running"/"Stopped"), 标准 supervisor 则为全大写. 这里统一去掉 ANSI 并
@@ -779,6 +825,12 @@ def _status(name):
 
 
 def start(name):
+    if is_termux():
+        svc = _runit_svc(name)
+        if not svc:
+            return {"ok": False, "message": "runit 服务 dm-%s 不存在" % name}
+        rc, out = _sv(["up", svc])
+        return {"ok": rc == 0, "message": out or "已启动"}
     ensure_supervisor()
     s = _status(name)
     if not s["managed"]:
@@ -795,12 +847,24 @@ def start(name):
 
 
 def stop(name):
+    if is_termux():
+        svc = _runit_svc(name)
+        if not svc:
+            return {"ok": False, "message": "runit 服务 dm-%s 不存在" % name}
+        rc, out = _sv(["down", svc])
+        return {"ok": rc == 0, "message": out or "已停止"}
     ensure_supervisor()
     rc, out = _sup(["stop", _prog(name)])
     return {"ok": rc == 0 or "not running" in out, "message": out}
 
 
 def restart(name):
+    if is_termux():
+        svc = _runit_svc(name)
+        if not svc:
+            return {"ok": False, "message": "runit 服务 dm-%s 不存在" % name}
+        rc, out = _sv(["restart", svc])
+        return {"ok": rc == 0, "message": out or "已重启"}
     ensure_supervisor()
     d = next((p for p in discover() if p["name"] == name), None)
     if d and d.get("manifest"):
