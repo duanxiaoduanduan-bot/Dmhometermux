@@ -248,10 +248,12 @@ body{font-family:-apple-system,"PingFang SC","Microsoft YaHei",sans-serif;backgr
         <div id="layerList"></div>
       </div>
       <div class="panel-section" id="sec-photos">
+        <div style="font-size:9px;color:#666;margin-bottom:6px">全局素材库（geodata 目录）· 不属于任何数据库，放到地图上后才计入当前库</div>
         <div class="photo-grid" id="photoGrid"></div>
         <div class="empty-state" id="photoEmpty">拖入照片到 geodata 目录</div>
       </div>
       <div class="panel-section" id="sec-videos">
+        <div style="font-size:9px;color:#666;margin-bottom:6px">全局素材库（geodata 目录）· 不属于任何数据库，放到地图上后才计入当前库</div>
         <div class="video-grid" id="videoGrid"></div>
         <div class="empty-state" id="videoEmpty">拖入视频到 geodata 目录</div>
       </div>
@@ -382,10 +384,65 @@ body{font-family:-apple-system,"PingFang SC","Microsoft YaHei",sans-serif;backgr
 // ===== 状态 =====
 var markers=[],paths=[],photoMarkers=[],videoMarkers=[];
 var markerId=0,pathId=0;
-var currentDb=localStorage.getItem('pgm_db')||'Work';
+// 默认库要和 dashboard 保持一致（共用 localStorage 键 pgm_db）；
+// 原来硬编码的 'Work' 在服务器上根本不存在，首次打开会把所有请求发到一个空库
+var currentDb=localStorage.getItem('pgm_db')||'trip';
 
-function switchDb(db){currentDb=db;localStorage.setItem('pgm_db',db);markers=[];paths=[];photoMarkers=[];videoMarkers=[];renderAll();loadGeoData().then(function(){renderAll()})}
-function loadDatabases(){fetch('/api/pg/databases').then(r=>r.json()).then(dbs=>{var s=document.getElementById('dbSelect');s.innerHTML='';dbs.forEach(function(d){s.innerHTML+='<option value="'+d+'"'+(d===currentDb?' selected':'')+'>🗄 '+d+'</option>'})})}
+// 把地图上属于「当前库」的要素图层全部摘掉。
+// 切库前必须调用：只清空数组不摘 Leaflet 图层的话，旧库的点/线/面会一直画在地图上，
+// 右侧列表却已经变成新库的内容，看起来就是「图层不跟着数据库走」。
+function clearFeatureLayers(){
+  [markers,photoMarkers,videoMarkers].forEach(function(arr){
+    arr.forEach(function(it){ if(it&&it.marker){ try{map.removeLayer(it.marker)}catch(e){} } });
+  });
+  paths.forEach(function(p){ if(p&&p.line){ try{map.removeLayer(p.line)}catch(e){} } });
+  markers=[];paths=[];photoMarkers=[];videoMarkers=[];
+  markerId=0;pathId=0;activeMarker=null;linkFirst=null;
+}
+
+// 统一刷新右侧全部面板（切库后每个列表与图层计数都要跟着变）
+function renderAll(){
+  ['renderMarkerList','renderPathList','renderPolygonList','renderLayerList','renderFootnotes','renderTable']
+    .forEach(function(fn){ try{ if(typeof window[fn]==='function')window[fn]() }catch(e){ console.warn(fn,e) } });
+}
+
+// 导入/从库恢复时沿用库里的 clientId，必须把自增计数器顶到已用最大值之后，
+// 否则新建要素会复用同一个 id，回写 upsert 时把已有要素覆盖掉。
+function bumpSeq(id){
+  var m=/^([mp])_(\d+)$/.exec(id||'');
+  if(!m)return;
+  var n=parseInt(m[2],10);
+  if(m[1]==='m'){ if(n>markerId)markerId=n } else { if(n>pathId)pathId=n }
+}
+
+async function switchDb(db){
+  if(!db||db===currentDb)return;
+  currentDb=db;localStorage.setItem('pgm_db',db);
+  // 切库先掐掉待执行的自动保存并禁写，否则 2 秒后会把 A 库的内存快照写进 B 库
+  if(autoSaveTimer){clearTimeout(autoSaveTimer);autoSaveTimer=null}
+  _dbLoaded=false;_deletedIds=[];
+  clearFeatureLayers();
+  renderAll();
+  showToast('切换到 🗄 '+db+' …');
+  await autoLoad();
+  renderAll();
+}
+
+function loadDatabases(){
+  return fetch('/api/pg/databases').then(r=>r.json()).then(dbs=>{
+    var s=document.getElementById('dbSelect');s.innerHTML='';
+    dbs.forEach(function(d){s.innerHTML+='<option value="'+d+'"'+(d===currentDb?' selected':'')+'>🗄 '+d+'</option>'});
+    // 记住的库已不存在（或默认值就不在列表里）时回落到第一个，
+    // 否则下拉显示的是 A 库、请求却发往一个不存在的库，页面全空还查不出原因
+    if(dbs.length&&dbs.indexOf(currentDb)<0){
+      var fb=dbs.indexOf('trip')>=0?'trip':dbs[0];
+      console.warn('数据库 '+currentDb+' 不存在，回落到 '+fb);
+      currentDb=fb;localStorage.setItem('pgm_db',fb);
+      s.value=fb;
+    }
+    renderLayerList();
+  }).catch(function(e){console.error('加载数据库列表失败',e)});
+}
 function dbApi(url,opts){
   opts=opts||{};
   url+=(url.indexOf('?')>=0?'&':'?')+'db='+encodeURIComponent(currentDb);
@@ -569,6 +626,7 @@ function addVideoToMap(lat,lng,videoUrl,label){
 function addMarker(lat,lng,name,desc,media,note,mediaType,clientId){
   if(!lat||!lng){var c=map.getCenter();lat=c.lat;lng=c.lng}
   // clientId：从数据库恢复时必须沿用库里的原 id，否则回写会当成新要素重复插入
+  if(clientId)bumpSeq(clientId);
   var id=clientId||('m_'+(++markerId));
   name=name||'点 '+markerId;desc=desc||'';media=media||'';note=note||'';mediaType=mediaType||(media?isVideoUrl(media)?'video':'photo':'');
   var icon=makeIcon('#e17055',14,media,mediaType);
@@ -1346,7 +1404,19 @@ function deleteTableFeature(i){
   if(!confirm('删除 '+props.name+'?'))return;
   var id=f.id||'';
   dbApi('/api/geo/marker/'+id,{method:'DELETE'})
-    .then(function(){showToast('已删除');renderTable();loadDatabases(); loadGeodata();autoSave()})
+    .then(function(){
+      // 库里删掉后内存也必须同步删除：否则下一次自动保存又把它原样写回去（表现为“删不掉/自己复活”）。
+      // 同理这里不再调 autoSave —— 删除已经由 API 落库了。
+      var cid=props.clientId;
+      if(cid){
+        var mk=markers.filter(function(m){return m.id===cid})[0];
+        if(mk){ if(mk.marker){try{map.removeLayer(mk.marker)}catch(e){}} markers=markers.filter(function(m){return m.id!==cid}) }
+        var pa=paths.filter(function(p){return p.id===cid})[0];
+        if(pa){ if(pa.line){try{map.removeLayer(pa.line)}catch(e){}} paths=paths.filter(function(p){return p.id!==cid}) }
+        markDeleted(cid);
+      }
+      showToast('已删除');renderAll();
+    })
     .catch(function(){showToast('删除失败')});
 }
 
@@ -1504,12 +1574,14 @@ function importGeoJSON(geojson,name){
       }
     }else if(gt==='LineString'){
       var coords=coord.map(function(c){return[c[1],c[0]]});
+      if(props.clientId)bumpSeq(props.clientId);
       var id=props.clientId||('p_'+(++pathId));var color='#'+Math.floor(Math.random()*16777215).toString(16).padStart(6,'0');
       var line=L.polyline(coords,{color:color,weight:4}).addTo(map);
       line.bindPopup('<b>'+esc(props.name||name||'线')+'</b>');
       paths.push({id:id,name:props.name||name||'导入线',coords:coords,color:color,line:line});added++;
     }else if(gt==='Polygon'){
       var coords=coord[0].map(function(c){return[c[1],c[0]]});
+      if(props.clientId)bumpSeq(props.clientId);
       var id=props.clientId||('p_'+(++pathId));var color='#'+Math.floor(Math.random()*16777215).toString(16).padStart(6,'0');
       var polygon=L.polygon(coords,{color:color,weight:3,fillColor:color,fillOpacity:0.2}).addTo(map);
       polygon.bindPopup('<b>'+esc(props.name||name||'区域')+'</b>');
@@ -1785,7 +1857,12 @@ var layerGroups={
 
 function renderLayerList(){
   var container=$('layerList');
-  var html='';
+  var total=0;
+  for(var k0 in layerGroups)total+=layerGroups[k0].getItems().length;
+  // 图层计数只算「当前库」的要素——和 dashboard 统一口径，避免误以为图层是全局的
+  var html='<div style="display:flex;align-items:center;gap:6px;margin-bottom:8px;padding:6px 8px;border-radius:6px;background:rgba(0,206,201,.08);border:1px solid rgba(0,206,201,.18)">'+
+    '<span style="font-size:11px;color:#00cec9">🗄 '+esc(currentDb)+'</span>'+
+    '<span style="font-size:10px;color:#888">当前库共 '+total+' 个要素</span></div>';
   for(var key in layerGroups){
     var lg=layerGroups[key];
     var itemCount=lg.getItems().length;
@@ -2153,9 +2230,10 @@ var _origMarkerClick=null;
 })();
 
 showToast('🗺 高德|🛰 卫星|🌍 OSM|🌙 暗色 · 点击点 · 拖拽图片/视频');
-// 自动恢复上次保存的数据 + 加载 geodata 照片
-autoLoad();
-loadDatabases(); loadGeodata();
+// 先确认数据库列表（校正失效的 currentDb），再从库里恢复要素，最后统一刷新面板。
+// 顺序不能颠倒：以前 autoLoad() 先跑，若 currentDb 是个不存在的库就整页空白且无提示。
+loadDatabases().then(function(){ return autoLoad() }).then(renderAll);
+loadGeodata();
 </script>
 </body>
 </html>
