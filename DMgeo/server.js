@@ -134,6 +134,12 @@ async function ensureStatsMirror() {
     created_at TIMESTAMP DEFAULT NOW()
   )`);
   await basemapPool.query(`CREATE INDEX IF NOT EXISTS idx_${STATS_MIRROR}_geom ON ${STATS_MIRROR} USING GIST (geom)`);
+  // 边界表 GIST 索引：regional-stats 的空间 JOIN(ST_Contains) 依赖它才能走索引，
+  // 否则退化为“要素数 × 边界数”的全表扫描，几百要素就分钟级卡死。
+  await basemapPool.query(`CREATE INDEX IF NOT EXISTS idx_provinces_geom ON provinces USING GIST (geom)`);
+  await basemapPool.query(`CREATE INDEX IF NOT EXISTS idx_cities_geom ON cities USING GIST (geom)`);
+  await basemapPool.query(`CREATE INDEX IF NOT EXISTS idx_districts_geom ON districts USING GIST (geom)`);
+  await basemapPool.query(`CREATE INDEX IF NOT EXISTS idx_countries_geom ON countries USING GIST (geom)`);
   _mirrorReady = true;
 }
 
@@ -1259,32 +1265,34 @@ const server = http.createServer((req, res) => {
       await syncFeaturesToBasemap(featPool, featDb);
       // 统计要素统一读镜像表（与 Basemap.features 分离，避免选 Basemap 时自引用串库），边界几何仍从 Basemap 读
       const feats = await basemapPool.query(`SELECT id, name, type, ST_X(ST_Centroid(geom)) AS lng, ST_Y(ST_Centroid(geom)) AS lat FROM ${STATS_MIRROR}`);
-      // 边界始终从 Basemap 读
-      const provs = await basemapPool.query("SELECT name, geom FROM provinces");
-      const cities = await basemapPool.query("SELECT name, geom FROM cities");
-      const dists = await basemapPool.query("SELECT name, geom FROM districts");
-      const countriesGeo = await basemapPool.query("SELECT name, geom FROM countries");
 
       const pMap = {};   // 中国省/市/区层级
       const cMap = {};   // 海外国家层级
+      // —— 性能修复：原实现对每个要素 × 每张边界表逐行发 ST_Contains 往返(≈要素数×3500 次 SQL)，
+      // 32 个要素就 55s。改为用空间 JOIN 一次性算出每个要素的省/市/区县/国家归属(共 4 次 SQL)，
+      // 边界表 GIST 索引见 ensureStatsMirror。判定点与原逻辑一致：均取要素质心 ST_Centroid(geom)。
+      const joinSql = (table, alias) => `SELECT DISTINCT ON (s.id) s.id, ${alias}.name AS bname
+        FROM ${STATS_MIRROR} s
+        JOIN ${table} ${alias} ON ST_Contains(${alias}.geom, ST_Centroid(s.geom))`;
+      const [provR, cityR, distR, countryR] = await Promise.all([
+        basemapPool.query(joinSql('provinces', 'p')),
+        basemapPool.query(joinSql('cities', 'c')),
+        basemapPool.query(joinSql('districts', 'd')),
+        basemapPool.query(`SELECT DISTINCT ON (s.id) s.id,
+          CASE WHEN c.name = 'Taiwan' THEN 'China' ELSE c.name END AS bname
+          FROM ${STATS_MIRROR} s
+          JOIN countries c ON ST_Contains(c.geom, ST_Centroid(s.geom))`)
+      ]);
+      const provMap = new Map(provR.rows.map(r => [r.id, r.bname]));
+      const cityMap = new Map(cityR.rows.map(r => [r.id, r.bname]));
+      const distMap = new Map(distR.rows.map(r => [r.id, r.bname]));
+      const countryMap = new Map(countryR.rows.map(r => [r.id, r.bname]));
+
       for (const f of feats.rows) {
-        // 找省（中国）
-        let pn = '海外/未知', cn = '海外/未知', dn = '海外/未知';
-        for (const p of provs.rows) {
-          const r = await basemapPool.query("SELECT ST_Contains($1, ST_SetSRID(ST_MakePoint($2,$3),4326)) AS ok", [p.geom, f.lng, f.lat]);
-          if (r.rows[0].ok) { pn = p.name; break; }
-        }
-        if (pn !== '海外/未知') {
-          // 找市
-          for (const c of cities.rows) {
-            const r = await basemapPool.query("SELECT ST_Contains($1, ST_SetSRID(ST_MakePoint($2,$3),4326)) AS ok", [c.geom, f.lng, f.lat]);
-            if (r.rows[0].ok) { cn = c.name; break; }
-          }
-          // 找区县
-          for (const d of dists.rows) {
-            const r = await basemapPool.query("SELECT ST_Contains($1, ST_SetSRID(ST_MakePoint($2,$3),4326)) AS ok", [d.geom, f.lng, f.lat]);
-            if (r.rows[0].ok) { dn = d.name; break; }
-          }
+        const pn = provMap.get(f.id);   // 境内：落在某省多边形内
+        if (pn) {
+          const cn = cityMap.get(f.id) || '海外/未知';
+          const dn = distMap.get(f.id) || '海外/未知';
           if (!pMap[pn]) pMap[pn] = {};
           if (!pMap[pn][cn]) pMap[pn][cn] = {};
           if (!pMap[pn][cn][dn]) pMap[pn][cn][dn] = { points:0, lines:0, polygons:0, timePaths:0, total:0, coords:[] };
@@ -1293,13 +1301,8 @@ const server = http.createServer((req, res) => {
           rc.total++;
           if (f.lng) rc.coords.push({lng: Math.round(f.lng*10000)/10000, lat: Math.round(f.lat*10000)/10000, name: f.name});
         } else {
-          // 海外：匹配国家（台湾→China，遵循一个中国表述）
-          let countryName = '海外/未知';
-          for (const c of countriesGeo.rows) {
-            const r = await basemapPool.query("SELECT ST_Contains($1, ST_SetSRID(ST_MakePoint($2,$3),4326)) AS ok", [c.geom, f.lng, f.lat]);
-            if (r.rows[0].ok) { countryName = (c.name === 'Taiwan') ? 'China' : c.name; break; }
-          }
-          if (countryName !== '海外/未知') {
+          const countryName = countryMap.get(f.id);
+          if (countryName) {
             if (!cMap[countryName]) cMap[countryName] = { points:0, lines:0, polygons:0, total:0, coords:[] };
             const rc = cMap[countryName];
             if (f.type === 'point') rc.points++; else if (f.type === 'line') rc.lines++; else if (f.type === 'polygon') rc.polygons++;

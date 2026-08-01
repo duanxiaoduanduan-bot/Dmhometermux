@@ -184,3 +184,11 @@ sv up dm-DMcore   # 逐个或循环 up
 **根因**：`addPhotoToMap` / `addVideoToMap` / `addMarker` 里 `mousedown` 都调了 `map.dragging.disable()`（拖 marker 时不想让地图跟着动），但三个 handler 的 `dragend` 里**漏了 `map.dragging.enable()`**，只有顶点编辑那条补了。于是 dragging 被关掉后永远回不来。
 
 **对策**：已在三处 `dragend` 补 `map.dragging.enable()`，并各加 `click` 兜底（防止「按下没拖动」也卡死）。改完 `map-player.html` 刷新页面（强刷 Ctrl/Cmd+Shift+R）即可恢复。注意：这属于 Leaflet 交互细节——凡是 `mousedown` 里 `disable` 了拖拽，对应 `dragend`/`click` 必须 `enable` 回来，否则就是永久失效。
+
+## 18. regional-stats 极慢（dashboard 加载数据多了就卡）
+
+**现象**：`/dashboard.html` 打开时卡几十秒甚至分钟级，数据越多越慢。实测 32 个要素时单次 `GET /api/geo/regional-stats` 耗时 ~55 秒。
+
+**根因**：`DMgeo/server.js` 的 `regional-stats` 原来是**逐要素 × 逐边界表**的 N×M 算法——对每个要素，逐个遍历 Basemap 的 provinces(~34)/cities(~340)/districts(~3000)/countries(~180)，每条发一条 `ST_Contains` SQL 往返（≈ 要素数 × 3500 次查询）。而且这些边界表**原本没有 GIST 索引**，单条查询也是顺序扫描。复杂度随要素数线性爆炸。
+
+**对策**：已改为**空间 JOIN**——用 4 次 SQL（`stats_features` 质心 `ST_Centroid(geom)` JOIN 各边界表 `ST_Contains`）一次性算出每个要素的省/市/区县/国家归属，并在 `ensureStatsMirror()` 里给 `provinces/cities/districts/countries` 补 `USING GIST (geom)` 索引。实测同库从 ~55s 降到 ~0.07s（290×）。统计口径与原逻辑严格一致（判定点同为质心；台湾→China；境内优先省市区、否则国家；汇总过滤规则不变）。改完重启 `dm-DMgeo` 生效。**教训**：PostGIS 空间查询一定要给参与 `ST_Contains` 的几何列建 GIST 索引，且优先用 JOIN 而非「应用层逐行发 SQL」。
