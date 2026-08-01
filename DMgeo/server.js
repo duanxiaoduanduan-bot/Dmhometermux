@@ -116,16 +116,38 @@ async function ensureFeatureStore(dbName, force) {
   }
 }
 
-// 串行化“选中库要素 → Basemap.features”的同步：regional-stats 是 GET 但有清写副作用，
+// 统计镜像表：**必须独立于 Basemap.features**。
+// 早期把镜像直接写进 Basemap.features，导致 Basemap 自己被选为数据库时形成自引用——
+// 源表就是镜像表，读到的是“上一次查询的那个库”的残留，选 Basemap 时统计会跟着别的库变。
+// 独立成 Basemap.stats_features 后：Basemap.features 只代表 Basemap 自己的要素（源），
+// stats_features 只做镜像（目标），任何库（含 Basemap）都严格按库独立统计。
+const STATS_MIRROR = 'stats_features';
+let _mirrorReady = false;
+async function ensureStatsMirror() {
+  if (_mirrorReady) return;
+  await basemapPool.query(`CREATE TABLE IF NOT EXISTS ${STATS_MIRROR} (
+    id SERIAL PRIMARY KEY,
+    name TEXT,
+    type TEXT DEFAULT 'point',
+    geom geometry(Geometry,4326),
+    properties JSONB DEFAULT '{}',
+    created_at TIMESTAMP DEFAULT NOW()
+  )`);
+  await basemapPool.query(`CREATE INDEX IF NOT EXISTS idx_${STATS_MIRROR}_geom ON ${STATS_MIRROR} USING GIST (geom)`);
+  _mirrorReady = true;
+}
+
+// 串行化“选中库要素 → Basemap.stats_features”的同步：regional-stats 是 GET 但有清写副作用，
 // 并发调用（切库/多面板重渲）可能互相覆盖或重复清写；用模块级 promise 链串行化，
 // 任一同步失败不影响后续调用链。
 let _statsSyncChain = Promise.resolve();
 async function syncFeaturesToBasemap(featPool, dbName) {
   const run = _statsSyncChain.then(async () => {
+    await ensureStatsMirror();
     let rows = [];
     try {
-      // “放进来”：把选中库的要素同步进 Basemap.features（底图库的标准要素集），
-      // 统计统一从 Basemap.features 读——对应“trip/其他数据库放进来会点亮底图并统计”的架构。
+      // “放进来”：把选中库的要素同步进 Basemap.stats_features（统计镜像表），
+      // 统计统一从镜像读——对应“trip/其他数据库放进来会点亮底图并统计”的架构。
       rows = (await featPool.query(
         "SELECT name, type, COALESCE(properties,'{}'::jsonb) AS properties, ST_AsGeoJSON(geom) AS geom FROM features"
       )).rows;
@@ -148,17 +170,17 @@ async function syncFeaturesToBasemap(featPool, dbName) {
     const bc = await basemapPool.connect();
     try {
       await bc.query('BEGIN');
-      await bc.query('DELETE FROM features');
+      await bc.query(`DELETE FROM ${STATS_MIRROR}`);
       for (const sf of rows) {
         await bc.query(
-          'INSERT INTO features (name, type, geom, properties) VALUES ($1,$2,ST_SetSRID(ST_GeomFromGeoJSON($3),4326),$4)',
+          `INSERT INTO ${STATS_MIRROR} (name, type, geom, properties) VALUES ($1,$2,ST_SetSRID(ST_GeomFromGeoJSON($3),4326),$4)`,
           [sf.name, sf.type, sf.geom, sf.properties]
         );
       }
       await bc.query('COMMIT');
     } catch (e) {
       try { await bc.query('ROLLBACK'); } catch (_) {}
-      console.warn('[regional-stats] 写入 Basemap.features 镜像失败:', e.message);
+      console.warn(`[regional-stats] 写入 Basemap.${STATS_MIRROR} 镜像失败:`, e.message);
     } finally {
       bc.release();
     }
@@ -1232,11 +1254,11 @@ const server = http.createServer((req, res) => {
     try {
       const featDb = url.searchParams.get('db') || 'trip';
       const featPool = getFeaturePool(featDb);
-      // “放进来”：把选中库的要素同步进 Basemap.features（底图库的标准要素集），
-      // 统计统一从 Basemap.features 读（精密后端统计源）。串行锁+容错已封装在辅助函数内。
+      // “放进来”：把选中库的要素同步进 Basemap.stats_features（统计镜像表），
+      // 统计统一从镜像表读（精密后端统计源）。串行锁+容错已封装在辅助函数内。
       await syncFeaturesToBasemap(featPool, featDb);
-      // 统计要素统一读 Basemap.features（精密后端统计），边界几何仍从 Basemap 读
-      const feats = await basemapPool.query("SELECT id, name, type, ST_X(ST_Centroid(geom)) AS lng, ST_Y(ST_Centroid(geom)) AS lat FROM features");
+      // 统计要素统一读镜像表（与 Basemap.features 分离，避免选 Basemap 时自引用串库），边界几何仍从 Basemap 读
+      const feats = await basemapPool.query(`SELECT id, name, type, ST_X(ST_Centroid(geom)) AS lng, ST_Y(ST_Centroid(geom)) AS lat FROM ${STATS_MIRROR}`);
       // 边界始终从 Basemap 读
       const provs = await basemapPool.query("SELECT name, geom FROM provinces");
       const cities = await basemapPool.query("SELECT name, geom FROM cities");
