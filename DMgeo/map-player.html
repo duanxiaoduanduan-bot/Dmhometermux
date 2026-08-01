@@ -577,7 +577,9 @@ function addPhotoToMap(lat,lng,photoUrl,label){
     savePhotoLocation(pd.photo,pd.name,pos.lat,pos.lng);
     autoSave();
     showToast('照片已移动到: '+pos.lat.toFixed(4)+', '+pos.lng.toFixed(4));
+    map.dragging.enable();   // 拖完照片恢复地图平移(否则地图拖拽永久失效)
   });
+  pm.on('click',function(){map.dragging.enable()});  // 点击未拖动也恢复平移
   // 更新 photoMarkers 中的引用
   for(var i=0;i<photoMarkers.length;i++){
     if(photoMarkers[i].photo===photoUrl){photoMarkers[i].marker=pm;photoMarkers[i].lat=lat;photoMarkers[i].lng=lng;return pm}
@@ -614,7 +616,9 @@ function addVideoToMap(lat,lng,videoUrl,label){
     if(mk){mk.lat=pos.lat;mk.lng=pos.lng;mk.marker.setLatLng(pos);updateMarkerPopup(mk);renderMarkerList();renderTable()}
     savePhotoLocation(vd.video,vd.name,pos.lat,pos.lng);
     showToast('视频已移动到: '+pos.lat.toFixed(4)+', '+pos.lng.toFixed(4));
+    map.dragging.enable();   // 拖完视频恢复地图平移
   });
+  vm.on('click',function(){map.dragging.enable()});  // 点击未拖动也恢复平移
   for(var i=0;i<videoMarkers.length;i++){
     if(videoMarkers[i].video===videoUrl){videoMarkers[i].marker=vm;videoMarkers[i].lat=lat;videoMarkers[i].lng=lng;return vm}
   }
@@ -645,8 +649,8 @@ function addMarker(lat,lng,name,desc,media,note,mediaType,clientId){
   popupHtml+='<div class="mp-btns"><button onclick="editMarker(\''+id+'\')">编辑</button><button onclick="deleteMarker(\''+id+'\')" style="color:#e74c3c">删除</button></div></div>';
   m.bindPopup(popupHtml);
 
-  m.on('dragend',function(){var pos=m.getLatLng();var mk=getMarkerById(id);if(mk){mk.lat=pos.lat;mk.lng=pos.lng;updateMarkerPopup(mk);renderMarkerList();renderTable();autoSave()}});
-  m.on('click',function(){if(linkMode){onMarkerClickForLink(mk);return}activeMarker=id;renderMarkerList()});
+  m.on('dragend',function(){var pos=m.getLatLng();var mk=getMarkerById(id);if(mk){mk.lat=pos.lat;mk.lng=pos.lng;updateMarkerPopup(mk);renderMarkerList();renderTable();autoSave()}map.dragging.enable();});
+  m.on('click',function(){if(linkMode){onMarkerClickForLink(mk);return}activeMarker=id;renderMarkerList();map.dragging.enable()});
 
   var mk={id:id,lat:lat,lng:lng,name:name,desc:desc,media:media,note:note,mediaType:mediaType,marker:m};
   markers.push(mk);

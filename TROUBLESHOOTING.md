@@ -174,3 +174,13 @@ sv up dm-DMcore   # 逐个或循环 up
 **根因**：`geo.datav.aliyun.com` 被 Cloudflare 拦截（网络环境相关）。
 
 **对策**：切换网络避开拦截后重试；或离线导入 `./install.sh geodata --local <目录>` / `./fetch-datav.sh` 走本地缓存。`fetch-datav.sh` 现已在阿里不可达时**明确报错退出（exit 2）**，不再哑错把库建空。
+
+---
+
+## 17. map-player.html 地图平移（拖拽）永久失效
+
+**现象**：`/map-player.html` 一开始能拖地图，但只要在地图上按下/拖动过任意 marker（照片、视频、普通点），地图就再也拖不动了。
+
+**根因**：`addPhotoToMap` / `addVideoToMap` / `addMarker` 里 `mousedown` 都调了 `map.dragging.disable()`（拖 marker 时不想让地图跟着动），但三个 handler 的 `dragend` 里**漏了 `map.dragging.enable()`**，只有顶点编辑那条补了。于是 dragging 被关掉后永远回不来。
+
+**对策**：已在三处 `dragend` 补 `map.dragging.enable()`，并各加 `click` 兜底（防止「按下没拖动」也卡死）。改完 `map-player.html` 刷新页面（强刷 Ctrl/Cmd+Shift+R）即可恢复。注意：这属于 Leaflet 交互细节——凡是 `mousedown` 里 `disable` 了拖拽，对应 `dragend`/`click` 必须 `enable` 回来，否则就是永久失效。
