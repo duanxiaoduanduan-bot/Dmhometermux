@@ -119,6 +119,9 @@ body{font-family:-apple-system,"PingFang SC","Microsoft YaHei",sans-serif;backgr
 .path-detail-inner .pd-label{color:#777;min-width:46px;flex-shrink:0}
 .path-pts{font-family:monospace;font-size:10px;color:#777;line-height:1.7;max-height:300px;overflow-y:auto;padding-right:4px}
 .path-pts .pt{display:block;white-space:nowrap}
+.path-pts .st-name{color:#cdb4ff;font-weight:600}
+.path-pts .st-coord{color:#666;font-size:9px;margin-left:8px}
+.path-pts .st-plain{color:#777}
 
 /* 进度条 */
 .bar-row{display:flex;align-items:center;gap:10px;margin-bottom:10px}
@@ -484,6 +487,19 @@ function renderLatestMarkers(mapData){
   $('latestMarkers').innerHTML=html;
 }
 
+// 把任意几何展平成 [lon,lat] 顶点数组
+function flatCoords(geom){
+  if(!geom)return [];
+  var t=geom.type;
+  if(t==='Point')return [geom.coordinates];
+  if(t==='MultiPoint')return geom.coordinates;
+  if(t==='LineString')return geom.coordinates;
+  if(t==='MultiLineString'){var a=[];geom.coordinates.forEach(function(s){a=a.concat(s);});return a;}
+  if(t==='Polygon')return geom.coordinates[0]||[];
+  if(t==='MultiPolygon'){var b=[];(geom.coordinates[0]||[]).forEach(function(r){b=b.concat(r);});return b;}
+  return [];
+}
+
 function renderPathsOverview(mapData){
   if(!mapData||!mapData.features){
     $('pathsOverview').innerHTML='<div class="empty">暂无路径数据</div>';return;
@@ -491,10 +507,22 @@ function renderPathsOverview(mapData){
   var paths=mapData.features.filter(function(f){return f.geometry&&(f.geometry.type==='LineString'||f.geometry.type==='Polygon'||f.geometry.type==='MultiLineString'||f.geometry.type==='MultiPolygon')});
   if(!paths.length){$('pathsOverview').innerHTML='<div class="empty">暂无路径</div>';return}
 
+  // 建立 坐标 -> 站点名 索引（同库里有名字的点要素）
+  var stationIdx={};
+  mapData.features.forEach(function(f){
+    if(!f.geometry)return;
+    if(f.geometry.type==='Point'||f.geometry.type==='MultiPoint'){
+      var nm=f.properties&&f.properties.name;
+      if(!nm)return;
+      var cs=f.geometry.type==='Point'?[f.geometry.coordinates]:f.geometry.coordinates;
+      cs.forEach(function(c){stationIdx[c[1].toFixed(5)+','+c[0].toFixed(5)]=nm;});
+    }
+  });
+
   var html='';
   for(var i=0;i<paths.length;i++){
     var p=paths[i],props=p.properties||{};
-    var coords=p.geometry.type==='Polygon'?p.geometry.coordinates[0]:p.geometry.coordinates;
+    var coords=flatCoords(p.geometry);
     var isLine=p.geometry.type==='LineString'||p.geometry.type==='MultiLineString';
     var typeBadge=isLine?'<span class="badge badge-path">路径</span>':'<span class="badge badge-photo">区域</span>';
 
@@ -514,15 +542,24 @@ function renderPathsOverview(mapData){
       metricLabel='顶点';
     }
 
-    // 轨迹点明细（每条最多渲染前 300 个点，避免超长线卡死）
+    // 途经站点（每条最多渲染前 300 个点；有名字的点要素显示站点名，否则退化为坐标）
     var ptsHtml='';
     var shown=Math.min(coords.length,300);
+    var namedCount=0;
     for(var k=0;k<shown;k++){
       var c=coords[k];
-      ptsHtml+='<span class="pt">#'+(k+1)+'  '+Number(c[1]||0).toFixed(5)+', '+Number(c[0]||0).toFixed(5)+'</span>';
+      var key=c[1].toFixed(5)+','+c[0].toFixed(5);
+      var st=stationIdx[key];
+      if(st)namedCount++;
+      if(st){
+        ptsHtml+='<span class="pt"><b class="st-name">'+esc(st)+'</b><span class="st-coord">'+Number(c[1]).toFixed(5)+', '+Number(c[0]).toFixed(5)+'</span></span>';
+      }else{
+        ptsHtml+='<span class="pt st-plain">'+Number(c[1]).toFixed(5)+', '+Number(c[0]).toFixed(5)+'</span>';
+      }
     }
-    if(coords.length>shown)ptsHtml+='<span class="pt">… 其余 '+(coords.length-shown)+' 点</span>';
+    if(coords.length>shown)ptsHtml+='<span class="pt st-plain">… 其余 '+(coords.length-shown)+' 点</span>';
 
+    var stationLabel=namedCount>0?('途经站点 ('+namedCount+')'):'轨迹点';
     var mediaRow=props&&props.media?'<div class="pd-row"><span class="pd-label">媒体</span><span>'+esc(String(props.media))+'</span></div>':'';
 
     var detail='<div class="path-detail"><div class="path-detail-inner">'+
@@ -531,7 +568,7 @@ function renderPathsOverview(mapData){
       '<div class="pd-row"><span class="pd-label">顶点数</span><span>'+coords.length+'</span></div>'+
       mediaRow+
       (props&&props.created?'<div class="pd-row"><span class="pd-label">创建</span><span>'+esc(String(props.created))+'</span></div>':'')+
-      '<div class="pd-label" style="margin:8px 0 2px">轨迹点</div>'+
+      '<div class="pd-label" style="margin:8px 0 2px">'+stationLabel+'</div>'+
       '<div class="path-pts">'+ptsHtml+'</div>'+
       '</div></div>';
 
