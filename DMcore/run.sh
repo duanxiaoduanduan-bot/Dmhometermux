@@ -19,4 +19,5 @@ echo
 # 必须 venv/bin/pip 也存在才算真正可用——避免 venv 创建失败时残留的"假 venv"软链误导。
 PY="../venv/bin/python"
 if [ -x "$PY" ] && [ -x "../venv/bin/pip" ]; then :; else PY="python3"; fi
-DMCORE_PORT="$PORT" DMCORE_HOST="$HOST" "$PY" app.py
+# exec：让 python 直接接管本进程，Ctrl+C / TERM 能直达应用，不会留下孤儿占端口
+exec env DMCORE_PORT="$PORT" DMCORE_HOST="$HOST" "$PY" app.py

@@ -1128,6 +1128,51 @@ function onMarkerClickForLink(mk){
 }
 
 // ===== 数据加载 =====
+// ===== 全局素材图层（geodata 目录里的 geojson/gpx）=====
+// 铁律：geodata 目录是**全局**的，不属于任何数据库。这些文件绝不能 importGeoJSON
+// 进 markers/paths —— 那样它们会被 buildGeoJSON 当成当前库的要素回写进去，
+// 你每切一次库就往新库里灌一遍全局文件（跨库污染，且会把库越撑越大）。
+// 这里只挂一个独立 LayerGroup 做只读预览：不参与保存、不计入当前库要素数、
+// 切库时保持不变。要真正入库必须点「导入到当前库」显式确认。
+var globalGeoLayer=L.layerGroup();
+var globalGeoFiles=[];      // {name,file,geojson,count}
+var globalGeoVisible=true;
+
+function clearGlobalGeo(){
+  try{globalGeoLayer.clearLayers()}catch(e){}
+  globalGeoFiles=[];
+}
+
+function previewGlobalGeo(geojson,name,file){
+  if(!geojson||!geojson.features||!geojson.features.length)return 0;
+  var feats=geojson.features.filter(function(f){return f&&f.geometry});
+  if(!feats.length)return 0;
+  var gl=L.geoJSON({type:'FeatureCollection',features:feats},{
+    style:{color:'#f39c12',weight:2,dashArray:'5,4',fillColor:'#f39c12',fillOpacity:.08},
+    pointToLayer:function(f,latlng){return L.circleMarker(latlng,{radius:4,color:'#f39c12',weight:2,fillColor:'#f39c12',fillOpacity:.5})},
+    onEachFeature:function(f,layer){
+      var p=f.properties||{};
+      layer.bindPopup('<b>'+esc(p.name||name||'素材要素')+'</b>'+
+        '<div style="font-size:10px;color:#888;margin-top:4px">🌐 全局素材 · 不属于任何数据库</div>'+
+        '<div style="font-size:10px;color:#888">来源: '+esc(file||'')+'</div>');
+    }
+  });
+  globalGeoLayer.addLayer(gl);
+  if(!map.hasLayer(globalGeoLayer)&&globalGeoVisible)globalGeoLayer.addTo(map);
+  globalGeoFiles.push({name:name||file||'素材',file:file||'',geojson:{type:'FeatureCollection',features:feats},count:feats.length});
+  return feats.length;
+}
+
+// 显式把全局素材灌进当前库（唯一的入库路径，必须用户确认）
+function importGlobalGeoToDb(){
+  if(!globalGeoFiles.length){showToast('没有全局素材可导入');return}
+  var n=0;globalGeoFiles.forEach(function(g){n+=g.count});
+  if(!confirm('把全局素材 '+globalGeoFiles.length+' 个文件、共 '+n+' 个要素导入到当前库「'+currentDb+'」？\n\n导入后它们属于该库，会参与统计与点亮。'))return;
+  globalGeoFiles.forEach(function(g){importGeoJSON(g.geojson,g.name)});
+  renderAll();autoSave();
+  showToast('已导入 '+n+' 个要素到 '+currentDb);
+}
+
 async function loadGeodata(){
   showToast('加载数据中...');
   try{
@@ -1135,7 +1180,7 @@ async function loadGeodata(){
     if(!r.ok)throw Error('empty');
     var data=await r.json();
     if(!data||!data.length){showToast('geodata 目录为空');return}
-    photoList=[];videoList=[];
+    photoList=[];videoList=[];clearGlobalGeo();
     for(var i=0;i<data.length;i++){
       var d=data[i];
       if(d.type==='photo_group'&&d.photos){
@@ -1149,7 +1194,9 @@ async function loadGeodata(){
         }
       }
       if(d.type==='geojson'||d.type==='gpx'){
-        try{var fr=await fetch(d.file);var json=await fr.json();if(d.type==='gpx')json=convertGpxToGeoJSON(json);importGeoJSON(json,d.name)}catch(e){console.error(d.name,e)}
+        // 只做只读预览，绝不 importGeoJSON 进 markers/paths ——
+        // 那会被 buildGeoJSON 回写进当前选中库，切一次库污染一次（见 previewGlobalGeo 注释）
+        try{var fr=await fetch(d.file);var json=await fr.json();if(d.type==='gpx')json=convertGpxToGeoJSON(json);previewGlobalGeo(json,d.name,d.file)}catch(e){console.error(d.name,e)}
       }
     }
     // 也检查根目录媒体
@@ -1164,7 +1211,9 @@ async function loadGeodata(){
       }
     }
     renderPhotoGrid();renderVideoGrid();
-    showToast('加载了 '+photoList.length+' 张照片 + '+videoList.length+' 个视频');
+    if(typeof renderLayerList==='function')renderLayerList();
+    var gn=0;globalGeoFiles.forEach(function(g){gn+=g.count});
+    showToast('加载了 '+photoList.length+' 张照片 + '+videoList.length+' 个视频'+(gn?' + '+gn+' 个素材要素(未入库)':''));
   }catch(e){showToast('加载失败: '+e.message)}
 }
 
@@ -1852,23 +1901,32 @@ var layerGroups={
   paths:{name:'📐 线',visible:true,getItems:function(){return linePaths()}},
   polygons:{name:'⬡ 面',visible:true,getItems:function(){return polygonPaths()}},
   photos:{name:'🖼️ 照片覆盖层',visible:true,getItems:function(){return photoMarkers}},
-  videos:{name:'🎬 视频覆盖层',visible:true,getItems:function(){return videoMarkers}}
+  videos:{name:'🎬 视频覆盖层',visible:true,getItems:function(){return videoMarkers}},
+  // global:true 的图层来自 geodata 目录，不属于任何数据库、不计入当前库要素数
+  globalGeo:{name:'🌐 全局素材图层',visible:true,global:true,getItems:function(){return globalGeoFiles}}
 };
 
 function renderLayerList(){
   var container=$('layerList');
   var total=0;
-  for(var k0 in layerGroups)total+=layerGroups[k0].getItems().length;
-  // 图层计数只算「当前库」的要素——和 dashboard 统一口径，避免误以为图层是全局的
+  // 图层计数只算「当前库」的要素——和 dashboard 统一口径。global:true 的图层
+  // （geodata 目录素材）不属于任何库，必须排除，否则又变回"全局混进库统计"。
+  for(var k0 in layerGroups)if(!layerGroups[k0].global)total+=layerGroups[k0].getItems().length;
   var html='<div style="display:flex;align-items:center;gap:6px;margin-bottom:8px;padding:6px 8px;border-radius:6px;background:rgba(0,206,201,.08);border:1px solid rgba(0,206,201,.18)">'+
     '<span style="font-size:11px;color:#00cec9">🗄 '+esc(currentDb)+'</span>'+
     '<span style="font-size:10px;color:#888">当前库共 '+total+' 个要素</span></div>';
   for(var key in layerGroups){
     var lg=layerGroups[key];
+    var isGlobal=!!lg.global;
     var itemCount=lg.getItems().length;
-    html+='<div style="display:flex;align-items:center;gap:8px;padding:8px 10px;border-radius:6px;margin-bottom:2px;background:rgba(255,255,255,.02)">'+
+    if(isGlobal&&!itemCount)continue;   // 没有全局素材时不占位
+    var sub=isGlobal
+      ? itemCount+' 个文件 · 不属于任何库'
+      : itemCount+' 项';
+    html+='<div style="display:flex;align-items:center;gap:8px;padding:8px 10px;border-radius:6px;margin-bottom:2px;background:'+(isGlobal?'rgba(243,156,18,.06)':'rgba(255,255,255,.02)')+(isGlobal?';border:1px dashed rgba(243,156,18,.25);margin-top:8px':'')+'">'+
       '<span style="font-size:16px">'+lg.name.split(' ')[0]+'</span>'+
-      '<div style="flex:1;min-width:0"><div style="font-size:11px">'+lg.name.split(' ').slice(1).join(' ')+'</div><div style="font-size:9px;color:#555">'+itemCount+' 项</div></div>'+
+      '<div style="flex:1;min-width:0"><div style="font-size:11px'+(isGlobal?';color:#f39c12':'')+'">'+lg.name.split(' ').slice(1).join(' ')+'</div><div style="font-size:9px;color:#555">'+sub+'</div></div>'+
+      (isGlobal?'<button onclick="importGlobalGeoToDb()" title="把这些素材写入当前库" style="padding:4px 8px;border-radius:10px;border:1px solid rgba(243,156,18,.35);background:rgba(243,156,18,.12);color:#f39c12;font-size:10px;cursor:pointer;margin-right:4px">入库</button>':'')+
       '<button onclick="toggleLayer(\''+key+'\')" id="layerBtn_'+key+'" style="padding:4px 10px;border-radius:10px;border:1px solid '+(lg.visible?'rgba(0,206,201,.3)':'rgba(255,255,255,.1)')+';background:'+(lg.visible?'rgba(0,206,201,.15)':'rgba(255,255,255,.04)')+';color:'+(lg.visible?'#00cec9':'#888')+';font-size:10px;cursor:pointer;transition:all .2s">'+(lg.visible?'显示':'隐藏')+'</button>'+
       '</div>';
   }
@@ -1878,6 +1936,12 @@ function renderLayerList(){
 function toggleLayer(key){
   var lg=layerGroups[key];if(!lg)return;
   lg.visible=!lg.visible;
+  // 全局素材图层是一个 LayerGroup，不是 {marker|line} 数组，单独处理
+  if(lg.global){
+    globalGeoVisible=lg.visible;
+    if(lg.visible)globalGeoLayer.addTo(map);else map.removeLayer(globalGeoLayer);
+    renderLayerList();return;
+  }
   var items=lg.getItems();
   for(var i=0;i<items.length;i++){
     var item=items[i];
