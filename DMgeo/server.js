@@ -527,8 +527,11 @@ async function handlePgApi(req, res, reqPath, method) {
       if (!body.data) throw new Error('缺少 data');
       const entries = Object.entries(body.data);
       const sets = entries.map(([k, v], i) => {
-        if (v && typeof v === 'object' && v.type === 'Point' && v.coordinates)
-          return `"${k}" = ST_SetSRID(ST_GeomFromGeoJSON('${JSON.stringify(v)}'), 4326)`;
+        if (v && typeof v === 'object') {
+          if (v.type === 'Point' && v.coordinates)
+            return `"${k}" = ST_SetSRID(ST_GeomFromGeoJSON('${JSON.stringify(v)}'), 4326)`;
+          return `"${k}" = '${JSON.stringify(v).replace(/'/g, "''")}'::jsonb`;
+        }
         return `"${k}" = '${String(v).replace(/'/g, "''")}'`;
       });
       await pool().query(`UPDATE "${tableName}" SET ${sets.join(', ')} WHERE id = $1`, [pathParts[2]]);

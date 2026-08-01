@@ -192,3 +192,14 @@ sv up dm-DMcore   # 逐个或循环 up
 **根因**：`DMgeo/server.js` 的 `regional-stats` 原来是**逐要素 × 逐边界表**的 N×M 算法——对每个要素，逐个遍历 Basemap 的 provinces(~34)/cities(~340)/districts(~3000)/countries(~180)，每条发一条 `ST_Contains` SQL 往返（≈ 要素数 × 3500 次查询）。而且这些边界表**原本没有 GIST 索引**，单条查询也是顺序扫描。复杂度随要素数线性爆炸。
 
 **对策**：已改为**空间 JOIN**——用 4 次 SQL（`stats_features` 质心 `ST_Centroid(geom)` JOIN 各边界表 `ST_Contains`）一次性算出每个要素的省/市/区县/国家归属，并在 `ensureStatsMirror()` 里给 `provinces/cities/districts/countries` 补 `USING GIST (geom)` 索引。实测同库从 ~55s 降到 ~0.07s（290×）。统计口径与原逻辑严格一致（判定点同为质心；台湾→China；境内优先省市区、否则国家；汇总过滤规则不变）。改完重启 `dm-DMgeo` 生效。**教训**：PostGIS 空间查询一定要给参与 `ST_Contains` 的几何列建 GIST 索引，且优先用 JOIN 而非「应用层逐行发 SQL」。
+
+## 19. db-manager.html 编辑含 jsonb 列的表保存失败（✎ 编辑 bug）
+
+**现象**：在 `db-manager.html`（8084）里，对任意含 `jsonb`/`json` 类型列的表（如 `features.properties`）点 ✎ 编辑、改完点「确认」，弹出报错 `invalid input syntax for type json`，数据保存不进去。
+
+**根因**：编辑表单把 JS 对象 `String()` 后显示成字面量 `[object Object]`，保存时 `el.value` 取到这个字符串，后端 `PUT /rows/:id` 对字符串值拼成 `SET col = '[object Object]'`，PostgreSQL 拒绝把非法 JSON 写进 jsonb 列 → 400。**几何列（geometry）不受影响**：编辑逻辑本就跳过 geometry，且后端对 `Point` 对象走 `ST_GeomFromGeoJSON`，所以只 jsonb/json 列中招。
+
+**对策**：前后端配套修（`DMgeo/db-manager.html` + `DMgeo/server.js`）：
+- 前端 `showEdit`/`addRow`：对对象值用 `JSON.stringify` 显示；`saveEdit`/`addRow` 对 `data_type`/`udt_name` 含 `json` 的列做 `JSON.parse` 后再提交（非法 JSON 会给提示不破坏数据）；
+- 后端 `PUT /rows/:id`：值若为对象且非 `Point`，用 `'<json>'::jsonb` 写入，而非 `String(v)`。
+- 改完刷新页面（强刷 Ctrl/Cmd+Shift+R）即可。验证：用临时行 PUT 嵌套对象 `{"k":"v2","nested":{"a":1}}` → 查回仍是真 JSON 对象，旧逻辑复现则报 `invalid input syntax for type json`。**教训**：jsonb 列的前端编辑必须用 JSON 文本 ↔ 对象互转，后端必须用 `::jsonb` 显式转换，不能把 JS 对象当字符串拼 SQL。

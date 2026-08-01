@@ -262,14 +262,14 @@ function showAdd(){
   var f='';cur.sch.forEach(function(c){if(c.udt_name!=='geometry'&&c.column_name!=='id')f+='<div class="fd"><label>'+E(c.column_name)+'</label><input id="f_'+E(c.column_name)+'"></div>'});
   mo('＋ 新增 — '+E(cur.tbl),f,addRow,'ok')
 }
-async function addRow(){var d={};cur.sch.forEach(function(c){if(c.udt_name!=='geometry'&&c.column_name!=='id'){var v=(document.getElementById('f_'+c.column_name)||{}).value;if(v)d[c.column_name]=v}});
+async function addRow(){function isJson(c){return /json/i.test(c.data_type||'')||c.udt_name==='json'||c.udt_name==='jsonb'}var d={};cur.sch.forEach(function(c){if(c.udt_name!=='geometry'&&c.column_name!=='id'){var el=document.getElementById('f_'+c.column_name);if(el&&el.value!==''){var val=el.value;if(isJson(c)){try{val=JSON.parse(val)}catch(e){T('字段 '+c.column_name+' 不是合法 JSON');throw e}}d[c.column_name]=val}}});
   try{var r=await api('/api/pg/tables/'+encodeURIComponent(cur.tbl)+'/rows',{method:'POST',body:JSON.stringify({data:d})});if(r.ok){T('✅');closeMo();loadPage(1);doData()}else T(r.error)}catch(e){T(e.message)}}
 
 function showEdit(i){
-  var r=cur.data.rows[i],f='';cur.sch.forEach(function(c){if(c.udt_name!=='geometry'&&c.column_name!=='id'){var v=r[c]!==null&&r[c]!==undefined?E(String(r[c])):'';f+='<div class="fd"><label>'+E(c.column_name)+'</label><input id="f_'+E(c.column_name)+'" value="'+v+'"></div>'}});
+  var r=cur.data.rows[i],f='';cur.sch.forEach(function(c){if(c.udt_name!=='geometry'&&c.column_name!=='id'){var raw=r[c.column_name];var v='';if(raw!==null&&raw!==undefined){v=(typeof raw==='object')?JSON.stringify(raw):String(raw)}f+='<div class="fd"><label>'+E(c.column_name)+'</label><input id="f_'+E(c.column_name)+'" value="'+E(v)+'"></div>'}});
   mo('✎ 编辑 — '+E(cur.tbl),f,function(){saveEdit(r.id)},'ok')
 }
-async function saveEdit(id){var d={};cur.sch.forEach(function(c){if(c.udt_name!=='geometry'&&c.column_name!=='id'){var el=document.getElementById('f_'+c.column_name);if(el)d[c.column_name]=el.value}});
+async function saveEdit(id){function isJson(c){return /json/i.test(c.data_type||'')||c.udt_name==='json'||c.udt_name==='jsonb'}var d={};cur.sch.forEach(function(c){if(c.udt_name!=='geometry'&&c.column_name!=='id'){var el=document.getElementById('f_'+c.column_name);if(el){var val=el.value;if(isJson(c)){if(val===''){val={}}else{try{val=JSON.parse(val)}catch(e){T('字段 '+c.column_name+' 不是合法 JSON');throw e}}}d[c.column_name]=val}}});
   try{var r=await api('/api/pg/tables/'+encodeURIComponent(cur.tbl)+'/rows/'+id,{method:'PUT',body:JSON.stringify({data:d})});if(r.ok){T('✅');closeMo();loadPage(cur.page);doData()}else T(r.error)}catch(e){T(e.message)}}
 
 // ===== 表操作 =====
