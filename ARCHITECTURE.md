@@ -194,3 +194,29 @@ DMcore 控制台（8088）的 `/api/projects` 用「独立 supervisord 实例」
 ## 10. 数据边界（什么不进仓库）
 
 媒体文件、`DMgeo/geodata` 地图数据、`DMshow/library` 素材、DMChat 的 `users.json`/`invites.json` —— **运行时数据，已 gitignore，不进仓库、绝不删除**。clone 到新机后 `./install.sh` 的 geodata 阶段会自动下载/导入底图数据；聊天账号需重新注册（首个注册者为 admin）。
+
+---
+
+## 11. DMgeo 前端功能（地图编辑 / 展示屏）
+
+DMgeo 的地图编辑在 `map-player.html`、大数据展示屏在 `dashboard.html`，数据均来自 `api/geo?db=当前库`（跟随页面顶部数据库切换器）。
+
+### 11.1 连线（多段折线 + 命名）
+
+- **进入**：点「🔗 连线」按钮进入连线模式（光标变 pointer，按钮变黄色「🔗 完成」）。
+- **画多段线**：依次点多个标记/点（已选点变半透明）；点「最后一个已选点」= 撤销该点；点其它已选过的点（非末尾）被忽略（防自环/重复）。**双击地图 或 按 Enter** 完成当前一条线（可连续画多条）。
+- **命名**：完成时弹框让用户输入线路名，**默认填 `起点 → 终点 (+N段)` 自动名**；点取消 → 沿用默认名（不丢线）；留空/只空格 → 回退默认名。名字写入 `features.name` + `properties.name`，随 `autoSave` 经 `/save-geodata` UPSERT（按 `clientId`）入库。
+- **存储格式**：线以 `MultiLineString` 入库（服务端 `ST_Multi(ST_MakeValid(ST_GeomFromGeoJSON(...)))`），顶点为 `[lon,lat]`。
+
+### 11.2 路径总览（dashboard.html）
+
+- **可折叠**：每条线路一个手风琴卡片，点标题行展开/收起，明细含类型 / 长度或顶点数 / 顶点数 / 媒体 / 创建时间。
+- **展开显示站点名**：明细「途经站点 (N)」按顶点坐标（lat/lon 5 位小数）匹配同库里**带 `properties.name` 的点要素**（`MultiPoint`）显示站点名；无匹配则退化显示坐标。
+- **长度修正**：原长度循环未展平多段线导致 `MultiLineString` 长度算成 `0m`；现用 `flatCoords()` 展平后按 haversine 正确累加（km / m）。
+
+### 11.3 要素存储格式要点
+
+- 点要素 → `MultiPoint`；线要素 → `MultiLineString`；均含 `properties.name`（未命名则为空串）。
+- 路径总览的站点名匹配、统计口径均依赖此格式；坐标键统一用 `lat.toFixed(5)+','+lon.toFixed(5)`。
+- 命名功能已端到端验证：写入带自定义中文名的线 → 读回 `name` 一致 → 删除清理无残留（`/save-geodata` 的 `deleted:[clientId]` 精确删）。
+

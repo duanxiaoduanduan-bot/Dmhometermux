@@ -239,3 +239,25 @@ dm → postgis → apps → geodata → start
 
 **重跑指引**（已 clone 的机器）：`git pull` 后按缺口重跑阶段即可（全部幂等）：
 `./install.sh postgis` → `./install.sh geodata` → `./install.sh dm` → `./install.sh start`。
+
+---
+
+## 10. DMgeo · 地图编辑 / 展示屏（2026-08-01 前端改动）
+
+**相关文件**
+
+| 路径 | 说明 |
+|------|------|
+| `DMgeo/map-player.html` | 地图编辑：连线（多段 + 命名） |
+| `DMgeo/dashboard.html` | 大数据展示屏：路径总览折叠 + 站点名 |
+| `DMgeo/server.js` | `/save-geodata`（UPSERT by clientId）、`/api/geo` 读写 |
+
+**本次改动**
+
+- **连线支持多段折线**：依次点多点，双击地图 / 按 Enter 完成一条（可连续画多条）；点末尾已选点撤销、重复点忽略防自环。
+- **连线命名**：完成时弹框命名，默认 `起点 → 终点 (+N段)`，取消不丢线、留空回退默认名；名写入 `features.name` 随 `autoSave` 入库。
+- **路径总览可折叠**：每条线路手风琴卡片，展开看类型/长度(或顶点数)/媒体/创建时间。
+- **展开显示站点名**：「途经站点 (N)」按坐标匹配同库命名点要素（`MultiPoint`）显示站名，无匹配退化坐标。
+- **修 MultiLineString 长度算成 0m**：`flatCoords()` 展平后 haversine 正确累加。
+
+**数据模型**：点 → `MultiPoint`、线 → `MultiLineString`，`properties.name` 即站名/线名；命名经 `/save-geodata` UPSERT，已端到端验证中文名写入读回一致、删除无残留。

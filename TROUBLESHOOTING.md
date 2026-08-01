@@ -203,3 +203,17 @@ sv up dm-DMcore   # 逐个或循环 up
 - 前端 `showEdit`/`addRow`：对对象值用 `JSON.stringify` 显示；`saveEdit`/`addRow` 对 `data_type`/`udt_name` 含 `json` 的列做 `JSON.parse` 后再提交（非法 JSON 会给提示不破坏数据）；
 - 后端 `PUT /rows/:id`：值若为对象且非 `Point`，用 `'<json>'::jsonb` 写入，而非 `String(v)`。
 - 改完刷新页面（强刷 Ctrl/Cmd+Shift+R）即可。验证：用临时行 PUT 嵌套对象 `{"k":"v2","nested":{"a":1}}` → 查回仍是真 JSON 对象，旧逻辑复现则报 `invalid input syntax for type json`。**教训**：jsonb 列的前端编辑必须用 JSON 文本 ↔ 对象互转，后端必须用 `::jsonb` 显式转换，不能把 JS 对象当字符串拼 SQL。
+
+---
+
+## 20. 路径总览展开后显示坐标而非站点名
+
+**现象**：dashboard「路径总览」展开「途经站点」里某些点只显示 `lat, lon` 坐标，没有站点名。
+
+**原因**：站点名是按顶点坐标（lat/lon 保留 5 位小数）去匹配同库里**带 `properties.name` 的点要素**（`MultiPoint`）。手动画的线、或顶点没落在任何命名点上的，就退化显示坐标——这是**预期行为，不是 bug**。
+
+**对策**：
+- 想让线显示站点名，连线时依次点「有名字的标记」即可；或先给点位补上 `name`（标记编辑 / `db-manager.html`）。
+- 切库后站点名随当前库变化（数据来自 `api/geo?db=当前库`）。
+- 若整条线都无站名，说明该库的命名点要素与线顶点坐标对不上（或库里就没有命名点）。
+
