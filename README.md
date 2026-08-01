@@ -1,12 +1,15 @@
 # dm-family
 
 本地多服务家族：**DMcore 控制台** 统一发现、托管、代理各子服务（媒体、地图、聊天、作品集、网盘等）。
+全家服务运行在 **Termux / Android 宿主**，由 **runit（termux-services）** 托管。
 
 ## 文档入口
 
 | 文档 | 内容 |
 |------|------|
-| **[CHANGELOG.md](CHANGELOG.md)** | **近期全部改动总览**（DMshow / 网盘 / 安装 / 代理） |
+| **[ARCHITECTURE.md](ARCHITECTURE.md)** | **各部分设计逻辑**（部署架构、数据库三库、统计口径、前端切库、服务托管、DMcore 适配、登录 shell） |
+| **[TROUBLESHOOTING.md](TROUBLESHOOTING.md)** | **易错点 / 排坑清单**（孤儿进程、端口冲突、串库、重置 PG、休眠、PM2 残留…） |
+| **[CHANGELOG.md](CHANGELOG.md)** | 近期全部改动总览（DMshow / 网盘 / 安装 / 代理） |
 | [install/README.md](install/README.md) | 分阶段安装（**先装 DM**） |
 | [DMcore/README.md](DMcore/README.md) | 运维控制台 |
 | [DMshow/README.md](DMshow/README.md) | 作品集主页 |
@@ -30,7 +33,7 @@ chmod +x install.sh uninstall.sh sync-github.sh install/*.sh
 chmod +x install.sh install/*.sh
 ./install.sh dm      # 只装核心（推荐先跑）
 ./install.sh         # 全装（含地图底图数据，装完大屏不黑屏）
-sudo ./install.sh postgis   # 建 postgis 扩展需 root（普通用户建会静默失败）
+./install.sh postgis # 建 postgis 扩展（非 termux 需 root；termux 宿主直接用当前用户 initdb，无需 root）
 ./install.sh status
 ```
 
@@ -52,20 +55,23 @@ sudo ./install.sh postgis   # 建 postgis 扩展需 root（普通用户建会静
 > 数据说明：媒体文件、`DMgeo/geodata` 地图数据、`DMshow/library` 素材**不进 Git 仓库**。
 > clone 后 `./install.sh` 的 **geodata 阶段**会自动下载/导入底图数据，其余数据随使用自然积累。
 
-## 在 Termux / Android 上部署（全家服务跑在 proot Ubuntu 内）
+## 在 Termux / Android 上部署（全家服务跑在 termux 宿主，由 runit 托管）
 
-termux 官方仓库没有 PostGIS 包，但你已经装了 proot Ubuntu（`ubuntu-rootfs`）。本方式**复用你的 Ubuntu**：termux 宿主只负责装 proot-distro、把仓库 bind 进 Ubuntu，然后 `./install.sh` 在 Ubuntu 内用原生 `apt` / `pg_ctlcluster` / `supervisord` 跑全套（含 PostgreSQL/PostGIS）。媒体数据留在宿主工作目录（gitignore，不删不进仓库）。
+termux 官方仓库提供 PostgreSQL + PostGIS 包，直接在宿主安装运行（mmap 共享内存，`initdb`/启动正常）。
+进程托管用 **runit（termux-services）**，与 termux 官方 postgres/sshd 同机制：每个服务一个 `runsv` 实例，目录在 `$PREFIX/var/service/dm-<name>/`。
+
+> ⚠️ **已弃用 proot 方案**：proot 的 ptrace 会让 PostgreSQL 共享内存初始化永久挂死（PG14/15/16 均验证中招），故全家服务直接跑 termux 宿主。
 
 ```bash
 # 在 Termux 里执行
-pkg install -y proot-distro            # 首次需要
-bash termux.sh                        # 全自动：装/复用 Ubuntu → 复用或克隆仓库 → 进 Ubuntu 跑 install.sh
+pkg install -y git termux-services   # 首次基础依赖
+bash termux.sh                        # 全自动：装依赖 → 复用/克隆仓库 → ./install.sh（dm→postgis→apps→geodata→start）
 # 已有仓库想复用（含本地媒体）：bash termux.sh /path/to/your/repo
 ```
 
-- proot 与宿主共享网络，服务端口在局域网 `http://192.168.1.38:<端口>` 可直接访问（见下方端口表）。
-- 宿主若还在用老 PM2 跑 DM 服务，先 `pm2 delete all` 避免端口冲突（媒体数据不受影响）。
-- 看状态：`proot-distro login ubuntu --bind $HOME/Dmhometermux:/dm -- bash -c "cd /dm && ./install.sh status"`
+- 服务由 runit 托管，端口在局域网 `http://192.168.1.40:<端口>` 可直接访问（见下方端口表）。
+- **严禁再用 PM2 / nohup 自启 DM 服务**（历史 PM2 方案已废弃并清理，`~/.bashrc` 的 `pm2 resurrect` 已移除）。DM 服务只由 runit 托管，混用会与 runit 双管理、造成孤儿进程 / 端口冲突。
+- 看状态：`cd ~/Dmhometermux && ./install.sh status`，或 `sv status dm-DMcore`。
 
 ## 一键脚本（日常运维）
 
@@ -80,7 +86,7 @@ bash termux.sh                        # 全自动：装/复用 Ubuntu → 复用
 
 ## 主要端口（默认）
 
-| 服务 | 端口 | 代理路径 |
+| 服务 | 端口 | 代理路径（8080 统一入口） |
 |------|------|----------|
 | 统一入口 proxy | 8080 | — |
 | DMmedia 媒体 | 8081 | `/media` |
@@ -95,13 +101,13 @@ bash termux.sh                        # 全自动：装/复用 Ubuntu → 复用
 
 ## 子服务一览
 
-- **DMcore** — 进程/项目管理 + 统一反向代理  
-- **DMmedia** — 媒体播放 + **网盘**（`:8087`）  
-- **DMgeo** — 地图 / PostGIS  
-- **DMpageo** — 合并门户  
-- **DMChat** — WebSocket 聊天  
-- **DMshow** — **作品集**（`library/` 自动排版）  
-- **dm-postgis** — 原生 PostgreSQL/PostGIS  
+- **DMcore** — 进程/项目管理 + 统一反向代理（8080 入口 / 8088 控制台）
+- **DMmedia** — 媒体播放 + **网盘**（`:8087`，双进程 server.js + file-manager.js）
+- **DMgeo** — 地图 / PostGIS
+- **DMpageo** — 合并门户（iframe 聚合 DMmedia + DMgeo）
+- **DMChat** — WebSocket 聊天（注册制）
+- **DMshow** — **作品集**（`library/` 自动排版）
+- **dm-postgis** — 原生 PostgreSQL 18 / PostGIS 3.6（端口 5432）
 
 ## DMChat 账号（注册制）
 
@@ -109,6 +115,11 @@ DMChat 是**注册制**，没有预置固定密码：
 
 - 首次启动若没有邀请码，会自动生成 `admin` 前缀邀请码；**第一个注册的用户自动成为管理员**。
 - 账号数据 `DMChat/users.json` / `DMChat/invites.json` 是**运行时数据，已 gitignore**，不进仓库——clone 到新机需重新注册（首个注册者为 admin）。
-- 本机（192.168.1.9）已初始化：访问 `http://192.168.1.9:8083`，昵称 `duan` / 密码 `dmchat2026`，邀请码 `dmfamily`。
+- 当前设备（192.168.1.40）已注册管理员账号 `duan`（admin），邀请码 `adminc50gch` 已用。**新用户需登录后在 DMChat 内生成新邀请码**；不要在公开仓库写明文密码 / 邀请码。
+
+## 设计逻辑与排坑
+
+- 各部分**设计逻辑**见 [ARCHITECTURE.md](ARCHITECTURE.md)
+- **易错点 / 排坑**见 [TROUBLESHOOTING.md](TROUBLESHOOTING.md)
 
 更细的改动说明请看 **[CHANGELOG.md](CHANGELOG.md)**。
