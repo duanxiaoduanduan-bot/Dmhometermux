@@ -1117,7 +1117,10 @@ function finishLink(){
   var color='#'+Math.floor(Math.random()*16777215).toString(16).padStart(6,'0');
   var line=L.polyline(coords,{color:color,weight:4}).addTo(map);
   var first=linkPoints[0].name||'?', last=linkPoints[linkPoints.length-1].name||'?';
-  var name=first+' → '+last+(linkPoints.length>2?(' (+'+(linkPoints.length-2)+')'):'');
+  var autoName=first+' → '+last+(linkPoints.length>2?(' (+'+(linkPoints.length-2)+')'):'');
+  // 让用户给连线命名：默认自动名，取消则用默认名（不丢线），留空也回退默认名
+  var input=prompt('给这条连线起个名字（默认自动名）',autoName);
+  var name=(input===null)?autoName:(input.trim()||autoName);
   line.bindPopup('<b>'+esc(name)+'</b><br>'+linkPoints.length+'个点<br><button onclick="deletePath(\''+id+'\')" style="color:#e74c3c;font-size:11px">删除连线</button>');
   paths.push({id:id,name:name,coords:coords,color:color,line:line});
   linkPoints.forEach(function(m){m.marker.setOpacity(1)});
