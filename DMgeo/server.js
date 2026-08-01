@@ -1311,8 +1311,21 @@ const server = http.createServer((req, res) => {
       let chinaTotal = 0;
       for (const p of provinces) chinaTotal += (p.total||0);
       const taiwanAdd = cMap['China'] ? cMap['China'].total : 0;
-      if (chinaTotal + taiwanAdd > 0)
-        countries.push({ name:'China', total: chinaTotal + taiwanAdd, points:0, lines:0, polygons:0, cities:[], coords: (cMap['China']?cMap['China'].coords:[]) });
+      if (chinaTotal + taiwanAdd > 0) {
+        // 分类计数要与 total 对得上：汇总各省 + 直接落在 China 面内但没落进任何省的要素。
+        // 旧版硬编码 points/lines/polygons 全 0，世界层级点开中国分类明细全是 0，
+        // 而 total 却有值——看着像“统计没算进去”。
+        const cnExtra = cMap['China'] || { points:0, lines:0, polygons:0 };
+        countries.push({
+          name:'China',
+          total: chinaTotal + taiwanAdd,
+          points:   provinces.reduce((s,p)=>s+(p.points||0),0)   + (cnExtra.points||0),
+          lines:    provinces.reduce((s,p)=>s+(p.lines||0),0)    + (cnExtra.lines||0),
+          polygons: provinces.reduce((s,p)=>s+(p.polygons||0),0) + (cnExtra.polygons||0),
+          cities:[],
+          coords: (cMap['China']?cMap['China'].coords:[])
+        });
+      }
       for (const cn of Object.keys(cMap).sort()) {
         if (cn === 'China') continue; // 已与省级合计合并
         const c = cMap[cn];
