@@ -104,6 +104,22 @@ body{font-family:-apple-system,"PingFang SC","Microsoft YaHei",sans-serif;backgr
 .badge-photo{background:rgba(253,121,168,.15);color:#fd79a8}
 .badge-video{background:rgba(162,155,254,.15);color:#a29bfe}
 
+/* 路径总览折叠 */
+.path-card{background:rgba(255,255,255,.02);border:1px solid rgba(255,255,255,.05);border-radius:10px;margin-bottom:8px;overflow:hidden}
+.path-head{display:flex;align-items:center;gap:10px;padding:10px 12px;cursor:pointer;transition:background .2s}
+.path-head:hover{background:rgba(255,255,255,.04)}
+.path-chevron{color:#666;font-size:11px;transition:transform .2s;flex-shrink:0}
+.path-card.open .path-chevron{transform:rotate(90deg);color:#6c5ce7}
+.path-name{flex:1;font-size:13px;color:#ddd;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.path-meta{display:flex;align-items:center;gap:8px;font-size:11px;color:#888;flex-shrink:0}
+.path-detail{max-height:0;overflow:hidden;transition:max-height .3s ease;background:rgba(0,0,0,.18)}
+.path-card.open .path-detail{max-height:440px}
+.path-detail-inner{padding:10px 14px 14px;border-top:1px solid rgba(255,255,255,.04)}
+.path-detail-inner .pd-row{display:flex;align-items:center;gap:8px;font-size:11px;color:#888;margin-bottom:6px}
+.path-detail-inner .pd-label{color:#777;min-width:46px;flex-shrink:0}
+.path-pts{font-family:monospace;font-size:10px;color:#777;line-height:1.7;max-height:300px;overflow-y:auto;padding-right:4px}
+.path-pts .pt{display:block;white-space:nowrap}
+
 /* 进度条 */
 .bar-row{display:flex;align-items:center;gap:10px;margin-bottom:10px}
 .bar-label{width:80px;font-size:12px;color:#888;text-align:right;flex-shrink:0}
@@ -475,12 +491,15 @@ function renderPathsOverview(mapData){
   var paths=mapData.features.filter(function(f){return f.geometry&&(f.geometry.type==='LineString'||f.geometry.type==='Polygon'||f.geometry.type==='MultiLineString'||f.geometry.type==='MultiPolygon')});
   if(!paths.length){$('pathsOverview').innerHTML='<div class="empty">暂无路径</div>';return}
 
-  var html='<table class="data-table"><thead><tr><th>名称</th><th>类型</th><th>点数</th><th>长度/面积</th></tr></thead><tbody>';
+  var html='';
   for(var i=0;i<paths.length;i++){
     var p=paths[i],props=p.properties||{};
     var coords=p.geometry.type==='Polygon'?p.geometry.coordinates[0]:p.geometry.coordinates;
-    var len='';
-    if(p.geometry.type==='LineString'){
+    var isLine=p.geometry.type==='LineString'||p.geometry.type==='MultiLineString';
+    var typeBadge=isLine?'<span class="badge badge-path">路径</span>':'<span class="badge badge-photo">区域</span>';
+
+    var metric,metricLabel;
+    if(isLine){
       var d=0;
       for(var j=1;j<coords.length;j++){
         var lat1=coords[j-1][1],lon1=coords[j-1][0],lat2=coords[j][1],lon2=coords[j][0];
@@ -488,15 +507,49 @@ function renderPathsOverview(mapData){
         var a=Math.sin(dLat/2)*Math.sin(dLat/2)+Math.cos(lat1*Math.PI/180)*Math.cos(lat2*Math.PI/180)*Math.sin(dLon/2)*Math.sin(dLon/2);
         d+=6371*2*Math.atan2(Math.sqrt(a),Math.sqrt(1-a));
       }
-      len=d<1?(d*1000).toFixed(0)+'m':d.toFixed(2)+'km';
+      metric=d<1?(d*1000).toFixed(0)+'m':d.toFixed(2)+'km';
+      metricLabel='长度';
     }else{
-      len=coords.length+' 顶点';
+      metric=coords.length+' 顶点';
+      metricLabel='顶点';
     }
-    var typeBadge=p.geometry.type==='Polygon'?'<span class="badge badge-photo">区域</span>':'<span class="badge badge-path">路径</span>';
-    html+='<tr><td>'+esc(props.name||'未命名')+'</td><td>'+typeBadge+'</td><td>'+coords.length+'</td><td>'+len+'</td></tr>';
+
+    // 轨迹点明细（每条最多渲染前 300 个点，避免超长线卡死）
+    var ptsHtml='';
+    var shown=Math.min(coords.length,300);
+    for(var k=0;k<shown;k++){
+      var c=coords[k];
+      ptsHtml+='<span class="pt">#'+(k+1)+'  '+Number(c[1]||0).toFixed(5)+', '+Number(c[0]||0).toFixed(5)+'</span>';
+    }
+    if(coords.length>shown)ptsHtml+='<span class="pt">… 其余 '+(coords.length-shown)+' 点</span>';
+
+    var mediaRow=props&&props.media?'<div class="pd-row"><span class="pd-label">媒体</span><span>'+esc(String(props.media))+'</span></div>':'';
+
+    var detail='<div class="path-detail"><div class="path-detail-inner">'+
+      '<div class="pd-row"><span class="pd-label">类型</span>'+typeBadge+'</div>'+
+      '<div class="pd-row"><span class="pd-label">'+metricLabel+'</span><span>'+metric+'</span></div>'+
+      '<div class="pd-row"><span class="pd-label">顶点数</span><span>'+coords.length+'</span></div>'+
+      mediaRow+
+      (props&&props.created?'<div class="pd-row"><span class="pd-label">创建</span><span>'+esc(String(props.created))+'</span></div>':'')+
+      '<div class="pd-label" style="margin:8px 0 2px">轨迹点</div>'+
+      '<div class="path-pts">'+ptsHtml+'</div>'+
+      '</div></div>';
+
+    html+='<div class="path-card" id="pathCard'+i+'">'+
+      '<div class="path-head" onclick="togglePath('+i+')">'+
+      '<span class="path-chevron">▶</span>'+
+      '<span class="path-name">'+esc(props.name||'未命名')+'</span>'+
+      typeBadge+
+      '<span class="path-meta">'+coords.length+'点 · '+metric+'</span>'+
+      '</div>'+detail+'</div>';
   }
-  html+='</tbody></table>';
   $('pathsOverview').innerHTML=html;
+}
+
+// 路径总览：折叠/展开单条线路明细
+function togglePath(i){
+  var el=document.getElementById('pathCard'+i);
+  if(el)el.classList.toggle('open');
 }
 
 function renderTimeline(mapData,geostats){
