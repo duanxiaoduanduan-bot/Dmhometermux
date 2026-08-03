@@ -102,7 +102,7 @@ bash termux.sh                        # 全自动：装依赖 → 复用/克隆�
 ## 子服务一览
 
 - **DMcore** — 进程/项目管理 + 统一反向代理（8080 入口 / 8088 控制台）
-- **DMmedia** — 媒体播放 + **网盘**（`:8087`，双进程 server.js + file-manager.js）
+- **DMmedia** — 媒体播放 + **网盘**（`:8087`，双进程 server.js + file-manager.js）；播放器（电视剧/MV/音乐）支持按名称/演唱者搜索、localStorage 续播（重新打开自动定位上次进度，不自动播放）
 - **DMgeo** — 地图 / PostGIS
 - **DMpageo** — 合并门户（iframe 聚合 DMmedia + DMgeo）
 - **DMChat** — WebSocket 聊天（注册制）
