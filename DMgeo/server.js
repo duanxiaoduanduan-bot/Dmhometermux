@@ -1320,15 +1320,22 @@ const server = http.createServer((req, res) => {
         const cityList = [];
         for (const cn of Object.keys(pMap[pn]).sort()) {
           const distList = [];
+          const buckets = Object.values(pMap[pn][cn]);
+          // 城市总数按全市点计算(含落在"未知区"的点)；否则无区级多边形的市
+          // (如省直辖县级市济源) 会被整市隐藏 —— 见济源建点不显示 bug
+          const cityTotal = buckets.reduce((s,d)=>s+(d.total||0),0);
+          const cityPoints = buckets.reduce((s,d)=>s+(d.points||0),0);
+          const cityLines = buckets.reduce((s,d)=>s+(d.lines||0),0);
+          const cityPolys = buckets.reduce((s,d)=>s+(d.polygons||0),0);
+          const cityCoords = buckets.flatMap(d=>d.coords||[]);
           for (const dn of Object.keys(pMap[pn][cn]).sort()) {
             const d = pMap[pn][cn][dn];
-            if (dn === '海外/未知') continue;
+            if (dn === '海外/未知') continue;   // 不把"未知区"当成区列出
             if (d.total === 0) continue;
             distList.push({name:dn, points:d.points, lines:d.lines, polygons:d.polygons, timePaths:d.timePaths, total:d.total, coords:d.coords});
           }
-          const ct = distList.reduce((s,x)=>s+x.total,0);
-          if (cn !== '海外/未知' && ct > 0)
-            cityList.push({name:cn, points:distList.reduce((s,x)=>s+x.points,0), lines:distList.reduce((s,x)=>s+x.lines,0), polygons:distList.reduce((s,x)=>s+x.polygons,0), timePaths:0, total:ct, coords:distList.flatMap(x=>x.coords), districts:distList});
+          if (cn !== '海外/未知' && cityTotal > 0)
+            cityList.push({name:cn, points:cityPoints, lines:cityLines, polygons:cityPolys, timePaths:0, total:cityTotal, coords:cityCoords, districts:distList});
         }
         const ct2 = cityList.reduce((s,x)=>s+x.total,0);
         if (pn !== '海外/未知' && ct2 > 0)
