@@ -574,8 +574,12 @@ img,video{display:block;max-width:100%}
     grid.querySelectorAll('.card').forEach((el, i) => {
       const cov = el.querySelector('.card-cover video');
       if (cov) {
-        el.addEventListener('mouseenter', () => { try { cov.play().catch(() => {}); } catch (_) {} });
-        el.addEventListener('mouseleave', () => { try { cov.pause(); } catch (_) {} });
+        let ct = null;
+        el.addEventListener('mouseenter', () => {
+          clearTimeout(ct);
+          ct = setTimeout(() => { cov.muted = true; try { cov.play().catch(() => {}); } catch (_) {} }, 180);
+        });
+        el.addEventListener('mouseleave', () => { clearTimeout(ct); try { cov.pause(); } catch (_) {} });
       }
       el.addEventListener('click', (e) => {
         if (e.target.closest('.card-play-btn')) {
@@ -609,12 +613,18 @@ img,video{display:block;max-width:100%}
     box.querySelectorAll('.mosaic-item').forEach(el => {
       const i = Number(el.getAttribute('data-i')) || 0;
       const v = el.querySelector('video.vprev');
+      let pt = null;
       if (v) {
         el.addEventListener('mouseenter', () => {
-          el.classList.add('playing');
-          try { v.play().catch(() => {}); } catch (_) {}
+          clearTimeout(pt);
+          pt = setTimeout(() => {
+            el.classList.add('playing');
+            v.muted = true;
+            try { v.play().catch(() => {}); } catch (_) {}
+          }, 180);
         });
         el.addEventListener('mouseleave', () => {
+          clearTimeout(pt);
           el.classList.remove('playing');
           try { v.pause(); } catch (_) {}
         });
@@ -622,13 +632,20 @@ img,video{display:block;max-width:100%}
       el.addEventListener('click', (e) => {
         if (e.target.closest('.m-pop')) {
           e.stopPropagation();
+          clearTimeout(pt);
+          el.classList.remove('playing');
           openLightbox(items, i, '画廊'); // 弹出：有声播放
           return;
         }
         if (v) { // 点击主体 = 内置播放/暂停（静音预览，不弹窗）
           e.stopPropagation();
-          if (v.paused) { el.classList.add('playing'); try { v.play().catch(() => {}); } catch (_) {} }
-          else { el.classList.remove('playing'); try { v.pause(); } catch (_) {} }
+          clearTimeout(pt);
+          if (el.classList.contains('playing') && !v.paused) {
+            el.classList.remove('playing'); try { v.pause(); } catch (_) {}
+          } else {
+            el.classList.add('playing'); v.muted = true;
+            try { v.play().catch(() => {}); } catch (_) {}
+          }
           return;
         }
         openLightbox(items, i, '画廊');
