@@ -234,11 +234,10 @@ function playEp(j, resumeTime){
   nt.textContent=s.name+' - '+ep.title;na.textContent=(j+1)+'/'+s.episodes.length+'集';
   V.src=ep.file||ep.url;
   if(resumeTime!=null && isFinite(resumeTime)){
-    V.addEventListener('loadedmetadata',function(){var d=V.duration;if(isFinite(d)&&resumeTime>d)resumeTime=d;V.currentTime=Math.max(0,resumeTime);V.pause();pB.textContent='▶';vo.style.display='flex';},{once:true});
-    pB.textContent='▶';vo.style.display='flex';es.style.display='none';V.style.display='block';
-  } else {
-    V.play().catch(function(){});
+    V.addEventListener('loadedmetadata',function(){var d=V.duration;if(isFinite(d)&&resumeTime>d)resumeTime=d;V.currentTime=Math.max(0,resumeTime);pB.textContent='⏸';armPlay(V);},{once:true});
     pB.textContent='⏸';vo.style.display='none';es.style.display='none';V.style.display='block';
+  } else {
+    pB.textContent='⏸';vo.style.display='none';es.style.display='none';V.style.display='block';armPlay(V);
   }
   V.volume=volBar.value/100;
   V.ontimeupdate=function(){if(V.duration&&isFinite(V.duration)&&!dragging){rB.value=(V.currentTime/V.duration)*1000;cT.textContent=f(V.currentTime)}saveProgressThrottled()};
@@ -309,6 +308,17 @@ function saveProgress(){
   try{localStorage.setItem('dmprog_tvdrama',JSON.stringify(map))}catch(e){}
 }
 function saveProgressThrottled(){var now=Date.now();if(now-_lastSave<3000)return;_lastSave=now;saveProgress()}
+// 自动播放：浏览器禁止无交互自动播放时，首次点击/按键/触屏补播
+function armPlay(el){
+  if(!el)return;
+  el.play().catch(function(){
+    var once=function(){el.play().catch(function(){});cleanup()};
+    var cleanup=function(){document.removeEventListener('pointerdown',once);document.removeEventListener('keydown',once);document.removeEventListener('touchstart',once)};
+    document.addEventListener('pointerdown',once,{once:true});
+    document.addEventListener('keydown',once,{once:true});
+    document.addEventListener('touchstart',once,{once:true});
+  });
+}
 function tryResume(){
   var map=JSON.parse(localStorage.getItem('dmprog_tvdrama')||'{}');
   if(map.__last){

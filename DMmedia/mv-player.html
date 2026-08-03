@@ -236,14 +236,13 @@ function playS(i, resumeTime){
   var url=s.url;
   [V,FV].forEach(function(el){el.src=url;el.load()});
   if(resumeTime!=null && isFinite(resumeTime)){
-    // 续播：定位到上次进度，不自动播放（避免突兀出声）
-    var apply=function(){var d=this.duration;if(isFinite(d)&&resumeTime>d)resumeTime=d;this.currentTime=Math.max(0,resumeTime);this.pause();};
+    // 续播：定位到上次进度后自动播放
+    var apply=function(){var d=this.duration;if(isFinite(d)&&resumeTime>d)resumeTime=d;this.currentTime=Math.max(0,resumeTime);armPlay(this);};
     V.addEventListener('loadedmetadata',function(){apply.call(V)},{once:true});
     FV.addEventListener('loadedmetadata',function(){apply.call(FV)},{once:true});
-    pB.textContent='▶';vo.style.display='flex';fvOverlay.style.display='flex';es.style.display='none';
-  } else {
-    var av=activeV();av.play().catch(function(){});
     pB.textContent='⏸';vo.style.display='none';fvOverlay.style.display='none';es.style.display='none';
+  } else {
+    var av=activeV();pB.textContent='⏸';vo.style.display='none';fvOverlay.style.display='none';es.style.display='none';armPlay(av);
   }
   if(!floatMode)V.style.display='block';
   // 同步音量
@@ -262,6 +261,17 @@ function playS(i, resumeTime){
   up();
 }
 
+// 自动播放：浏览器禁止无交互自动播放时，首次点击/按键/触屏补播
+function armPlay(el){
+  if(!el)return;
+  el.play().catch(function(){
+    var once=function(){el.play().catch(function(){});cleanup()};
+    var cleanup=function(){document.removeEventListener('pointerdown',once);document.removeEventListener('keydown',once);document.removeEventListener('touchstart',once)};
+    document.addEventListener('pointerdown',once,{once:true});
+    document.addEventListener('keydown',once,{once:true});
+    document.addEventListener('touchstart',once,{once:true});
+  });
+}
 // ===== 续播：localStorage 进度保存/恢复 =====
 var _lastSave=0;
 function saveProgress(){

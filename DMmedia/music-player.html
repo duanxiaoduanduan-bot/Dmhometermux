@@ -131,9 +131,9 @@ function playS(i, resumeTime){
   if(i<0||i>=sg.length)return;ci=i;var s=sg[i];nt.textContent=s.title;na.textContent=s.artist||'';A.src=s.url;
   if(resumeTime!=null && isFinite(resumeTime)){
     A.load();
-    A.addEventListener('loadedmetadata',function(){var d=A.duration;if(isFinite(d)&&resumeTime>d)resumeTime=d;A.currentTime=Math.max(0,resumeTime);A.pause();pB.textContent='▶';},{once:true});
+    A.addEventListener('loadedmetadata',function(){var d=A.duration;if(isFinite(d)&&resumeTime>d)resumeTime=d;A.currentTime=Math.max(0,resumeTime);pB.textContent='⏸';armPlay(A);},{once:true});
   } else {
-    A.play().catch(function(){});pB.textContent='⏸';
+    pB.textContent='⏸';armPlay(A);
   }
   es.style.display='none';
   // 解析歌词：优先用 song 里的 lrc，否则尝试加载同名 .lrc 文件
@@ -223,6 +223,17 @@ function up(){
   });
 }
 document.addEventListener('keydown',function(e){if(e.key===' '){e.preventDefault();togP()}});
+// 自动播放：浏览器禁止无交互自动播放时，首次点击/按键/触屏补播
+function armPlay(el){
+  if(!el)return;
+  el.play().catch(function(){
+    var once=function(){el.play().catch(function(){});cleanup()};
+    var cleanup=function(){document.removeEventListener('pointerdown',once);document.removeEventListener('keydown',once);document.removeEventListener('touchstart',once)};
+    document.addEventListener('pointerdown',once,{once:true});
+    document.addEventListener('keydown',once,{once:true});
+    document.addEventListener('touchstart',once,{once:true});
+  });
+}
 // ===== 续播：localStorage 进度保存/恢复 =====
 var _lastSave=0;
 function saveProgress(){
