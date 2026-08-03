@@ -1160,8 +1160,12 @@ async function getFilesFromDrop(dt) {
     } else res();
   });
   for (const e of entries) {
-    if (e.isFile) { e.file(f => { setRel(f, e.name); out.push(f); }, () => {}); }
-    else { await readNode(e, e.name); } // 目录保留根名，整文件夹递归上传
+    if (e.isFile) {
+      // 必须 await：e.file() 回调是异步的，不等待就拿不到文件（单文件拖入会漏传）
+      await new Promise(res => e.file(f => { setRel(f, e.name); out.push(f); res(); }, () => res()));
+    } else {
+      await readNode(e, e.name); // 目录保留根名，整文件夹递归上传
+    }
   }
   return out;
 }
