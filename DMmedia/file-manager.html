@@ -1131,9 +1131,50 @@ let dragC = 0;
 document.addEventListener('dragenter', e => { e.preventDefault(); dragC++; if (dragC===1) dropOverlay.classList.add('show'); });
 document.addEventListener('dragleave', e => { dragC--; if (dragC===0) dropOverlay.classList.remove('show'); });
 document.addEventListener('dragover', e => e.preventDefault());
-document.addEventListener('drop', e => {
+
+// 递归展开拖入的文件夹：dataTransfer.files 不含文件夹内文件，
+// 必须走 items[].webkitGetAsEntry() 逐层读取，才能把整个文件夹传上去。
+// 为每个文件写入 webkitRelativePath（相对拖入根的路径），后端据此还原目录层级。
+async function getFilesFromDrop(dt) {
+  const items = dt.items;
+  if (!items || !items.length || !items[0].webkitGetAsEntry) {
+    return Array.from(dt.files || []); // 退化：仅支持平铺文件
+  }
+  const entries = [];
+  for (const it of items) { const e = it.webkitGetAsEntry(); if (e) entries.push(e); }
+  if (!entries.length) return Array.from(dt.files || []);
+
+  const out = [];
+  const setRel = (f, rel) => { try { Object.defineProperty(f, 'webkitRelativePath', { value: rel, configurable: true }); } catch (_) {} };
+  const readNode = (entry, prefix) => new Promise(res => {
+    if (entry.isFile) {
+      entry.file(f => { setRel(f, prefix ? prefix + '/' + entry.name : entry.name); out.push(f); res(); }, () => res());
+    } else if (entry.isDirectory) {
+      const reader = entry.createReader();
+      const loop = () => reader.readEntries(async batch => {
+        if (!batch.length) return res();
+        for (const ch of batch) await readNode(ch, prefix ? prefix + '/' + entry.name : entry.name);
+        loop();
+      }, () => res());
+      loop();
+    } else res();
+  });
+  for (const e of entries) {
+    if (e.isFile) { e.file(f => { setRel(f, e.name); out.push(f); }, () => {}); }
+    else { await readNode(e, e.name); } // 目录保留根名，整文件夹递归上传
+  }
+  return out;
+}
+
+document.addEventListener('drop', async e => {
   e.preventDefault(); dragC = 0; dropOverlay.classList.remove('show');
-  if (e.dataTransfer.files.length) uploadFiles(e.dataTransfer.files);
+  let files = [];
+  if (e.dataTransfer && e.dataTransfer.items && e.dataTransfer.items.length) {
+    files = await getFilesFromDrop(e.dataTransfer);
+  } else if (e.dataTransfer && e.dataTransfer.files.length) {
+    files = Array.from(e.dataTransfer.files);
+  }
+  if (files.length) uploadFiles(files);
 });
 
 // ===== 全局事件 =====
