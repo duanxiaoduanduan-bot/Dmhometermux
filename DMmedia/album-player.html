@@ -47,9 +47,10 @@ body{font-family:-apple-system,"PingFang SC","Microsoft YaHei","Helvetica Neue",
 .slideshow .no-photo{color:#555;font-size:14px;text-align:center;padding:40px}
 .slideshow .no-photo .ei{font-size:48px;opacity:.4;margin-bottom:8px}
 
-/* 自动播放指示器 */
-.slideshow .auto-indicator{position:absolute;top:12px;left:16px;background:rgba(0,0,0,.5);padding:4px 10px;border-radius:10px;font-size:10px;color:#fdcb6e;cursor:pointer;z-index:5;display:none;align-items:center;gap:4px}
-.slideshow .auto-indicator.on{display:flex}
+/* 自动轮播按钮（常显，避免原 display:none 导致点不到） */
+.slideshow .auto-indicator{position:absolute;top:12px;left:16px;background:rgba(0,0,0,.5);padding:5px 12px;border-radius:12px;font-size:11px;color:#bbb;border:1px solid rgba(255,255,255,.1);cursor:pointer;z-index:5;display:flex;align-items:center;gap:4px;transition:all .2s}
+.slideshow .auto-indicator:hover{background:rgba(0,0,0,.7);color:#fff}
+.slideshow .auto-indicator.on{color:#fdcb6e;border-color:rgba(253,203,110,.4);background:rgba(253,203,110,.12)}
 
 /* ===== 视频区域 ===== */
 .video-section{padding:16px 20px;flex-shrink:0;border-top:1px solid rgba(255,255,255,.04)}
@@ -177,7 +178,7 @@ function renderAlbumBar(){
 }
 
 function selectAlbum(i){
-  if(i<0||i>=albums.length)return;curAlbum=i;curSlide=0;stopAuto();
+  if(i<0||i>=albums.length)return;curAlbum=i;curSlide=0;autoPlay=false;stopAuto();
   renderAlbumBar();
   renderContent();
 }
@@ -195,9 +196,9 @@ function renderContent(){
   if(hasPhotos){
     var ss=document.createElement('div');ss.className='slideshow';ss.id='slideshow';
 
-    // 自动播放指示
+    // 自动轮播按钮（常显）
     var ai=document.createElement('div');ai.className='auto-indicator';ai.id='autoInd';
-    ai.textContent='▶ 自动';ai.onclick=function(e){e.stopPropagation();toggleAuto()};
+    ai.textContent='▶ 自动轮播';ai.onclick=function(e){e.stopPropagation();toggleAuto()};
     ss.appendChild(ai);
 
     // 计数器
@@ -229,6 +230,10 @@ function renderContent(){
       ts.appendChild(th);
     }
     ss.appendChild(ts);
+
+    // hover 到幻灯片上暂停轮播，移开恢复（仅轮播态才生效）
+    ss.addEventListener('mouseenter',function(){if(autoPlay)stopAuto()});
+    ss.addEventListener('mouseleave',function(){if(autoPlay)startAuto()});
 
     main.appendChild(ss);
   }
@@ -293,8 +298,8 @@ function prevSlide(){goSlide(curSlide-1)}
 function toggleAuto(){
   autoPlay=!autoPlay;
   var ai=document.getElementById('autoInd');
-  if(autoPlay){ai.classList.add('on');ai.textContent='⏸ 停止';startAuto()}
-  else{ai.classList.remove('on');ai.textContent='▶ 自动';stopAuto()}
+  if(autoPlay){ai.classList.add('on');ai.innerHTML='⏸ 暂停轮播';startAuto()}
+  else{ai.classList.remove('on');ai.innerHTML='▶ 自动轮播';stopAuto()}
 }
 function startAuto(){stopAuto();autoTimer=setInterval(function(){nextSlide()},3000)}
 function stopAuto(){clearInterval(autoTimer);autoTimer=null}
