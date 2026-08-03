@@ -58,7 +58,12 @@ body{font-family:-apple-system,"PingFang SC","Microsoft YaHei","Helvetica Neue",
 .video-card{background:rgba(255,255,255,.03);border:1px solid rgba(255,255,255,.06);border-radius:10px;overflow:hidden;cursor:pointer;transition:all .2s}
 .video-card:hover{border-color:rgba(253,203,110,.3)}
 .video-card video{width:100%;aspect-ratio:16/9;object-fit:cover;background:#000;display:block}
+.video-card{position:relative}
 .video-card .vc-info{padding:8px 12px;font-size:11px;color:#aaa;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+/* 弹出全屏按钮（默认 hover 才显，手机常显） */
+.video-card .vc-pop{position:absolute;top:8px;right:8px;width:28px;height:28px;border-radius:50%;background:rgba(0,0,0,.5);border:1px solid rgba(255,255,255,.15);color:#fff;font-size:13px;line-height:1;cursor:pointer;display:flex;align-items:center;justify-content:center;opacity:0;transition:opacity .2s;z-index:3}
+.video-card:hover .vc-pop{opacity:1}
+.video-card .vc-pop:hover{background:rgba(0,0,0,.8)}
 
 /* 视频弹窗 */
 .video-modal{position:fixed;inset:0;z-index:200;background:rgba(0,0,0,.92);display:none;align-items:center;justify-content:center;flex-direction:column}
@@ -81,6 +86,7 @@ body{font-family:-apple-system,"PingFang SC","Microsoft YaHei","Helvetica Neue",
   .slideshow .thumb-strip .th{width:36px;height:24px}
   .slideshow .slide-nav{width:36px;height:36px;font-size:14px}
   .video-section .video-grid{grid-template-columns:1fr}
+  .video-card .vc-pop{opacity:1}
 }
 </style>
 </head>
@@ -235,8 +241,22 @@ function renderContent(){
     for(var j=0;j<a.videos.length;j++){
       var v=a.videos[j];
       var vc=document.createElement('div');vc.className='video-card';
-      vc.innerHTML='<video src="'+(v.url||v.file)+'" preload="metadata" muted></video><div class="vc-info">'+esc(v.name)+'</div>';
-      vc.onclick=function(k){return function(){openVideo(k)}}(j);
+      vc.innerHTML='<video src="'+(v.url||v.file)+'" preload="metadata" muted playsinline></video>'+
+                   '<div class="vc-info">'+esc(v.name)+'</div>'+
+                   '<button class="vc-pop" title="弹出全屏播放">⛶</button>';
+      (function(card,idx){
+        var vid=card.querySelector('video');
+        // 桌面：鼠标移上去卡片内联预览（静音），移开暂停
+        card.addEventListener('mouseenter',function(){vid.muted=true;vid.play().catch(function(){})});
+        card.addEventListener('mouseleave',function(){vid.pause()});
+        // 点击卡片主体：内联播放/暂停切换（不弹窗）；触屏无 hover 时即点即播
+        card.addEventListener('click',function(e){
+          if(e.target.closest('.vc-pop'))return;
+          if(vid.paused){vid.muted=false;vid.play().catch(function(){})}else vid.pause();
+        });
+        // 弹出按钮：保留全屏弹窗能力
+        card.querySelector('.vc-pop').addEventListener('click',function(e){e.stopPropagation();openVideo(idx)});
+      })(vc,j);
       grid.appendChild(vc);
     }
     vs.appendChild(grid);
