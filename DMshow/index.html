@@ -162,8 +162,18 @@ img,video{display:block;max-width:100%}
 .mosaic-item img,.mosaic-item video{width:100%;height:auto;display:block}
 .mosaic-item .play{
   position:absolute;inset:0;display:grid;place-items:center;font-size:28px;color:#fff;
-  background:rgba(0,0,0,.15);pointer-events:none;
+  background:rgba(0,0,0,.15);pointer-events:none;transition:opacity .2s;
 }
+.mosaic-item.playing .play{opacity:0}
+.mosaic-item .m-pop{
+  position:absolute;top:8px;right:8px;width:30px;height:30px;border-radius:8px;
+  display:grid;place-items:center;font-size:15px;line-height:1;
+  background:rgba(0,0,0,.55);backdrop-filter:blur(6px);color:#fff;
+  border:1px solid rgba(255,255,255,.25);cursor:pointer;opacity:0;transition:opacity .2s;z-index:4;
+}
+.mosaic-item:hover .m-pop{opacity:1}
+.mosaic-item .m-pop:hover{background:rgba(225,112,85,.85);border-color:transparent}
+.mosaic-item video.vprev{cursor:pointer}
 
 .empty{
   border:1px dashed rgba(255,255,255,.12);border-radius:18px;padding:34px 18px;
@@ -515,13 +525,13 @@ img,video{display:block;max-width:100%}
     if (col.cover) {
       const isVid = /\.(mp4|webm|mkv|mov|avi)(\?|$)/i.test(col.cover);
       if (isVid) {
-        return '<video src="' + esc(col.cover) + '#t=0.1" muted preload="metadata"></video><div class="card-play">▶</div>';
+        return '<video src="' + esc(col.cover) + '#t=0.1" muted playsinline preload="metadata"></video><div class="card-play">▶</div>';
       }
       return '<img src="' + esc(col.cover) + '" loading="lazy" alt="">';
     }
     const first = (col.items || [])[0];
     if (first && first.type === 'video') {
-      return '<video src="' + esc(first.url) + '#t=0.1" muted preload="metadata"></video><div class="card-play">▶</div>';
+      return '<video src="' + esc(first.url) + '#t=0.1" muted playsinline preload="metadata"></video><div class="card-play">▶</div>';
     }
     if (first && first.type === 'image') {
       return '<img src="' + esc(first.url) + '" loading="lazy" alt="">';
@@ -562,6 +572,11 @@ img,video{display:block;max-width:100%}
     }
     grid.innerHTML = list.map(c => cardHtml(c, badge)).join('');
     grid.querySelectorAll('.card').forEach((el, i) => {
+      const cov = el.querySelector('.card-cover video');
+      if (cov) {
+        el.addEventListener('mouseenter', () => { try { cov.play().catch(() => {}); } catch (_) {} });
+        el.addEventListener('mouseleave', () => { try { cov.pause(); } catch (_) {} });
+      }
       el.addEventListener('click', (e) => {
         if (e.target.closest('.card-play-btn')) {
           e.stopPropagation();
@@ -583,13 +598,39 @@ img,video{display:block;max-width:100%}
     }
     box.innerHTML = items.map((it, i) => {
       if (it.type === 'video') {
-        return '<div class="mosaic-item" data-i="' + i + '"><video src="' + esc(it.url) + '#t=0.1" muted preload="metadata"></video><div class="play">▶</div></div>';
+        return '<div class="mosaic-item" data-i="' + i + '">' +
+          '<video class="vprev" src="' + esc(it.url) + '#t=0.1" muted playsinline preload="metadata"></video>' +
+          '<div class="play">▶</div>' +
+          '<button class="m-pop" data-pop="1" title="弹出播放（有声）">⛶</button>' +
+        '</div>';
       }
       return '<div class="mosaic-item" data-i="' + i + '"><img src="' + esc(it.url) + '" loading="lazy" alt="' + esc(it.name) + '"></div>';
     }).join('');
     box.querySelectorAll('.mosaic-item').forEach(el => {
-      el.addEventListener('click', () => {
-        const i = Number(el.getAttribute('data-i')) || 0;
+      const i = Number(el.getAttribute('data-i')) || 0;
+      const v = el.querySelector('video.vprev');
+      if (v) {
+        el.addEventListener('mouseenter', () => {
+          el.classList.add('playing');
+          try { v.play().catch(() => {}); } catch (_) {}
+        });
+        el.addEventListener('mouseleave', () => {
+          el.classList.remove('playing');
+          try { v.pause(); } catch (_) {}
+        });
+      }
+      el.addEventListener('click', (e) => {
+        if (e.target.closest('.m-pop')) {
+          e.stopPropagation();
+          openLightbox(items, i, '画廊'); // 弹出：有声播放
+          return;
+        }
+        if (v) { // 点击主体 = 内置播放/暂停（静音预览，不弹窗）
+          e.stopPropagation();
+          if (v.paused) { el.classList.add('playing'); try { v.play().catch(() => {}); } catch (_) {} }
+          else { el.classList.remove('playing'); try { v.pause(); } catch (_) {} }
+          return;
+        }
         openLightbox(items, i, '画廊');
       });
     });
