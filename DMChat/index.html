@@ -169,6 +169,13 @@ input { font-family: inherit; }
 </head>
 <body>
 
+<!-- 非安全上下文（http://IP）下浏览器会禁用 getUserMedia/getDisplayMedia，
+     顶部给一条可点击的 HTTPS 入口，避免用户点了通话按钮只见"无法访问"却不知原因 -->
+<div id="secureHint" style="display:none;position:fixed;top:0;left:0;right:0;z-index:9999;background:#b45309;color:#fff;padding:7px 10px;font-size:13px;line-height:1.4;text-align:center;box-shadow:0 2px 8px rgba(0,0,0,.3)">
+  ⚠️ 当前是 HTTP 访问，浏览器已禁用 <b>麦克风 / 摄像头 / 投屏</b>。
+  <a id="secureHintLink" href="#" style="color:#fff;font-weight:700;text-decoration:underline">点此切换到 HTTPS 安全地址 →</a>
+</div>
+
 <div class="login-overlay" id="loginOverlay">
   <div class="login-box" id="loginBox">
     <h2 id="loginTitle">💬 DMChat 登录</h2>
@@ -470,7 +477,7 @@ function handleVideoFrame(msg){ if(isVideoOwner) return; const img=document.getE
 
 async function startScreenShareReal(){
   if(screenStream) return;
-  if(!navigator.mediaDevices || !navigator.mediaDevices.getDisplayMedia){ toast('投屏/通话需要安全上下文（HTTPS 或 localhost）。当前用 http://IP 访问时浏览器会禁用摄像头与屏幕共享权限。','error'); return; }
+  if(!navigator.mediaDevices || !navigator.mediaDevices.getDisplayMedia){ toast(!window.isSecureContext ? '投屏需要 HTTPS 安全上下文，请改用 https://'+location.hostname+':8443 访问' : '当前浏览器不支持屏幕共享（手机浏览器均不支持，请用电脑版 Chrome/Edge）','error'); return; }
   let stream;
   try{ stream=await navigator.mediaDevices.getDisplayMedia({video:{frameRate:10},audio:true}); } catch(e){ toast('已取消或无权限投屏','error'); return; }
   screenStream=stream;
@@ -497,7 +504,7 @@ async function sendVoiceOfferTo(uid){
 }
 async function startVoiceBroadcast(){
   if(voiceStream) return;
-  if(!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia){ toast('语音需要安全上下文（HTTPS 或 localhost）','error'); return; }
+  if(!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia){ toast(!window.isSecureContext ? '语音需要 HTTPS 安全上下文，请改用 https://'+location.hostname+':8443 访问' : '当前浏览器不支持麦克风采集','error'); return; }
   try{ voiceStream=await navigator.mediaDevices.getUserMedia({audio:true}); }catch(e){ toast('无法访问麦克风（请检查浏览器权限）','error'); return; }
   for(const u of users){ if(u.id===myId) continue; await sendVoiceOfferTo(u.id); }
 }
@@ -543,9 +550,9 @@ function sendChat(){ const input=document.getElementById('msgInput'), text=input
 function onInputKey(e){ if(e.key==='Enter'&&!e.shiftKey){ e.preventDefault(); sendChat(); } }
 
 function startCall(type){ if(users.length<2){toast('没有其他在线用户','error');return;} const other=users.find(u=>u.id!==myId); if(!other){toast('没有其他在线用户','error');return;} startCallWith(type,other.id); }
-async function startCallWith(type,targetId){ callType=type; callTarget=targetId; try{localStream=await navigator.mediaDevices.getUserMedia({video:type==='video',audio:true});} catch(e){toast('无法访问摄像头/麦克风','error');return;} document.getElementById('localVideo').srcObject=localStream; document.getElementById('callPanel').classList.add('show'); document.getElementById('callStatus').textContent='正在呼叫...'; peerConn=new RTCPeerConnection(rtcConfig); localStream.getTracks().forEach(t=>peerConn.addTrack(t,localStream)); peerConn.onicecandidate=(e)=>{if(e.candidate)ws.send(JSON.stringify({type:'call-ice',target:callTarget,candidate:e.candidate}));}; peerConn.ontrack=(e)=>{document.getElementById('remoteVideo').srcObject=e.streams[0];document.getElementById('videoContainer').classList.add('show');}; const offer=await peerConn.createOffer(); await peerConn.setLocalDescription(offer); ws.send(JSON.stringify({type:'call-offer',target:callTarget,sdp:offer,callType:type})); }
+async function startCallWith(type,targetId){ callType=type; callTarget=targetId; try{ if(!navigator.mediaDevices||!navigator.mediaDevices.getUserMedia) throw new Error('no-media'); localStream=await navigator.mediaDevices.getUserMedia({video:type==='video',audio:true});} catch(e){toast(!window.isSecureContext ? '当前 HTTP 访问下浏览器已禁用摄像头/麦克风，请改用 https://'+location.hostname+':8443' : '无法访问摄像头/麦克风（请在浏览器地址栏左侧检查权限设置）','error');return;} document.getElementById('localVideo').srcObject=localStream; document.getElementById('callPanel').classList.add('show'); document.getElementById('callStatus').textContent='正在呼叫...'; peerConn=new RTCPeerConnection(rtcConfig); localStream.getTracks().forEach(t=>peerConn.addTrack(t,localStream)); peerConn.onicecandidate=(e)=>{if(e.candidate)ws.send(JSON.stringify({type:'call-ice',target:callTarget,candidate:e.candidate}));}; peerConn.ontrack=(e)=>{document.getElementById('remoteVideo').srcObject=e.streams[0];document.getElementById('videoContainer').classList.add('show');}; const offer=await peerConn.createOffer(); await peerConn.setLocalDescription(offer); ws.send(JSON.stringify({type:'call-offer',target:callTarget,sdp:offer,callType:type})); }
 function handleIncomingCall(msg){ pendingCall={from:msg.from,fromName:msg.fromName,type:msg.callType,sdp:msg.sdp}; document.getElementById('incomingIcon').textContent=msg.callType==='video'?'📹':'🎤'; document.getElementById('incomingCaller').textContent=msg.fromName; document.getElementById('incomingType').textContent=msg.callType==='video'?'视频通话':'语音通话'; document.getElementById('incomingDialog').classList.add('show'); }
-async function acceptCall(){ if(!pendingCall)return; document.getElementById('incomingDialog').classList.remove('show'); callType=pendingCall.type; try{localStream=await navigator.mediaDevices.getUserMedia({video:callType==='video',audio:true});} catch(e){toast('无法访问摄像头/麦克风','error');return;} document.getElementById('localVideo').srcObject=localStream; document.getElementById('callPanel').classList.add('show'); document.getElementById('callStatus').textContent='通话中...'; peerConn=new RTCPeerConnection(rtcConfig); localStream.getTracks().forEach(t=>peerConn.addTrack(t,localStream)); peerConn.onicecandidate=(e)=>{if(e.candidate)ws.send(JSON.stringify({type:'call-ice',target:pendingCall.from,candidate:e.candidate}));}; peerConn.ontrack=(e)=>{document.getElementById('remoteVideo').srcObject=e.streams[0];document.getElementById('videoContainer').classList.add('show');}; await peerConn.setRemoteDescription(new RTCSessionDescription(pendingCall.sdp)); const answer=await peerConn.createAnswer(); await peerConn.setLocalDescription(answer); ws.send(JSON.stringify({type:'call-answer',target:pendingCall.from,sdp:answer})); callTarget=pendingCall.from; pendingCall=null; }
+async function acceptCall(){ if(!pendingCall)return; document.getElementById('incomingDialog').classList.remove('show'); callType=pendingCall.type; try{ if(!navigator.mediaDevices||!navigator.mediaDevices.getUserMedia) throw new Error('no-media'); localStream=await navigator.mediaDevices.getUserMedia({video:callType==='video',audio:true});} catch(e){toast(!window.isSecureContext ? '当前 HTTP 访问下浏览器已禁用摄像头/麦克风，请改用 https://'+location.hostname+':8443' : '无法访问摄像头/麦克风（请在浏览器地址栏左侧检查权限设置）','error');return;} document.getElementById('localVideo').srcObject=localStream; document.getElementById('callPanel').classList.add('show'); document.getElementById('callStatus').textContent='通话中...'; peerConn=new RTCPeerConnection(rtcConfig); localStream.getTracks().forEach(t=>peerConn.addTrack(t,localStream)); peerConn.onicecandidate=(e)=>{if(e.candidate)ws.send(JSON.stringify({type:'call-ice',target:pendingCall.from,candidate:e.candidate}));}; peerConn.ontrack=(e)=>{document.getElementById('remoteVideo').srcObject=e.streams[0];document.getElementById('videoContainer').classList.add('show');}; await peerConn.setRemoteDescription(new RTCSessionDescription(pendingCall.sdp)); const answer=await peerConn.createAnswer(); await peerConn.setLocalDescription(answer); ws.send(JSON.stringify({type:'call-answer',target:pendingCall.from,sdp:answer})); callTarget=pendingCall.from; pendingCall=null; }
 function rejectCall(){ if(pendingCall){ws.send(JSON.stringify({type:'call-hangup',target:pendingCall.from}));pendingCall=null;} document.getElementById('incomingDialog').classList.remove('show'); }
 function hangupCall(){ if(callTarget)ws.send(JSON.stringify({type:'call-hangup',target:callTarget})); endCall(); }
 function endCall(){ if(peerConn){peerConn.close();peerConn=null;} if(localStream){localStream.getTracks().forEach(t=>t.stop());localStream=null;} document.getElementById('localVideo').srcObject=null; document.getElementById('remoteVideo').srcObject=null; document.getElementById('videoContainer').classList.remove('show'); document.getElementById('callPanel').classList.remove('show'); callTarget=null; callType=''; }
@@ -582,6 +589,17 @@ document.getElementById('loginPass').addEventListener('keydown',(e)=>{if(e.key==
 document.getElementById('loginInvite').addEventListener('keydown',(e)=>{if(e.key==='Enter') doAuth();});
 document.getElementById('msgInput').addEventListener('input',function(){this.style.height='auto';this.style.height=Math.min(this.scrollHeight,120)+'px';});
 document.body.addEventListener('click',function(){ const a=document.getElementById('roomAudio'); if(a && a.srcObject && a.paused) a.play().catch(()=>{}); });
+// ===== 非安全上下文提示：http://IP 下通话/投屏必然失败，给出可直接点的 HTTPS 入口 =====
+(function(){
+  if(window.isSecureContext) return;
+  const b=document.getElementById('secureHint');
+  if(!b) return;
+  document.getElementById('secureHintLink').href='https://'+location.hostname+':8443'+location.pathname+location.search;
+  b.style.display='';
+  const h=b.offsetHeight;
+  document.body.style.marginTop=h+'px';
+  document.body.style.height='calc(100vh - '+h+'px)';
+})();
 </script>
 </body>
 </html>
