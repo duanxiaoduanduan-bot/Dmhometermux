@@ -98,9 +98,9 @@ body {
 
 /* 批量操作栏 */
 .batch-bar {
-  display: none; align-items: center; gap: 12px; padding: 10px 20px;
+  display: none; align-items: center; gap: 8px; padding: 10px 20px;
   background: var(--blue-bg); border-bottom: 1px solid var(--blue-border);
-  animation: slideDown .2s;
+  animation: slideDown .2s; flex-wrap: wrap;
 }
 .batch-bar.show { display: flex; }
 .batch-bar .count { font-size: 13px; color: var(--blue); font-weight: 600; }
@@ -292,7 +292,7 @@ body {
     <div class="sidebar-foot">
       <button class="btn btn-outline" style="width:100%;font-size:11px;margin-bottom:6px;justify-content:center" type="button" onclick="showStorageManager()" title="添加 U 盘 / 盘符 / 自定义目录">💾 添加存储</button>
       <button class="btn btn-ghost" style="width:100%;font-size:10px;padding:4px;color:var(--text3)" type="button" onclick="refreshMounts()" title="检测新插入的U盘/硬盘">🔄 检测外接设备</button>
-      <div style="margin-top:4px">网盘 v2.2 · 可增存储</div>
+      <div style="margin-top:4px">网盘 v2.3 · 完整性校验</div>
     </div>
   </aside>
 
@@ -311,7 +311,8 @@ body {
     <!-- 批量操作栏 -->
     <div class="batch-bar" id="batchBar">
       <span class="count" id="batchCount">已选 0 项</span>
-      <button class="btn btn-outline" onclick="batchDownload()">⬇️ 下载</button>
+      <button class="btn btn-primary" onclick="batchDownloadZip()" title="打包成一个 ZIP 下载，自带 CRC 校验 + SHA-256 清单，推荐">📦 打包下载</button>
+      <button class="btn btn-outline" onclick="batchDownload()" title="逐个下载并校验 SHA-256，失败自动重试">⬇️ 校验下载</button>
       <button class="btn btn-danger" onclick="batchDelete()">🗑 删除</button>
       <button class="btn btn-ghost" onclick="clearSelection()">✕ 取消</button>
     </div>
@@ -383,13 +384,101 @@ const API = (() => {
   return location.origin + '/api';
 })();
 
-let currentPath = '/workspace';
+let currentPath = ''; // 真实路径由 /api/info 的 pageDir 在初始化时填入，不写死物理机路径
 let items = [];
 let selected = new Set();
 let sortBy = 'name';
 let sortAsc = true;
 let viewMode = 'list';
 const UPLOAD_CONCURRENCY = 2; // 并发上传数
+const VERIFY_CHUNK = 2 * 1024 * 1024; // 校验下载分块大小
+
+// ===== 纯 JS SHA-256（http 下也可用，浏览器原生 crypto.subtle 仅在 https/localhost 可用）=====
+function rotr32(x, n) { return ((x >>> n) | (x << (32 - n))) >>> 0; }
+const K256 = new Uint32Array([
+  0x428a2f98,0x71374491,0xb5c0fbcf,0xe9b5dba5,0x3956c25b,0x59f111f1,0x923f82a4,0xab1c5ed5,
+  0xd807aa98,0x12835b01,0x243185be,0x550c7dc3,0x72be5d74,0x80deb1fe,0x9bdc06a7,0xc19bf174,
+  0xe49b69c1,0xefbe4786,0x0fc19dc6,0x240ca1cc,0x2de92c6f,0x4a7484aa,0x5cb0a9dc,0x76f988da,
+  0x983e5152,0xa831c66d,0xb00327c8,0xbf597fc7,0xc6e00bf3,0xd5a79147,0x06ca6351,0x14292967,
+  0x27b70a85,0x2e1b2138,0x4d2c6dfc,0x53380d13,0x650a7354,0x766a0abb,0x81c2c92e,0x92722c85,
+  0xa2bfe8a1,0xa81a664b,0xc24b8b70,0xc76c51a3,0xd192e819,0xd6990624,0xf40e3585,0x106aa070,
+  0x19a4c116,0x1e376c08,0x2748774c,0x34b0bcb5,0x391c0cb3,0x4ed8aa4a,0x5b9cca4f,0x682e6ff3,
+  0x748f82ee,0x78a5636f,0x84c87814,0x8cc70208,0x90befffa,0xa4506ceb,0xbef9a3f7,0xc67178f2
+]);
+class Sha256Js {
+  constructor() {
+    this.h = new Uint32Array([0x6a09e667,0xbb67ae85,0x3c6ef372,0xa54ff53a,0x510e527f,0x9b05688c,0x1f83d9ab,0x5be0cd19]);
+    this.w = new Uint32Array(64); this.buf = new Uint8Array(64); this.bl = 0; this.lo = 0; this.hi = 0;
+  }
+  _block(b, off) {
+    const w = this.w;
+    for (let i = 0; i < 16; i++) w[i] = ((b[off+i*4]<<24)|(b[off+i*4+1]<<16)|(b[off+i*4+2]<<8)|b[off+i*4+3])>>>0;
+    for (let i = 16; i < 64; i++) {
+      const s0 = rotr32(w[i-15],7)^rotr32(w[i-15],18)^(w[i-15]>>>3);
+      const s1 = rotr32(w[i-2],17)^rotr32(w[i-2],19)^(w[i-2]>>>10);
+      w[i] = (w[i-16]+s0+w[i-7]+s1)>>>0;
+    }
+    let a=this.h[0],b2=this.h[1],c=this.h[2],d=this.h[3],e=this.h[4],f=this.h[5],g=this.h[6],hh=this.h[7];
+    for (let i = 0; i < 64; i++) {
+      const S1 = rotr32(e,6)^rotr32(e,11)^rotr32(e,25);
+      const ch = (e&f)^((~e)&g);
+      const t1 = (hh+S1+ch+K256[i]+w[i])>>>0;
+      const S0 = rotr32(a,2)^rotr32(a,13)^rotr32(a,22);
+      const maj = (a&b2)^(a&c)^(b2&c);
+      const t2 = (S0+maj)>>>0;
+      hh=g; g=f; f=e; e=(d+t1)>>>0; d=c; c=b2; b2=a; a=(t1+t2)>>>0;
+    }
+    this.h[0]=(this.h[0]+a)>>>0; this.h[1]=(this.h[1]+b2)>>>0; this.h[2]=(this.h[2]+c)>>>0; this.h[3]=(this.h[3]+d)>>>0;
+    this.h[4]=(this.h[4]+e)>>>0; this.h[5]=(this.h[5]+f)>>>0; this.h[6]=(this.h[6]+g)>>>0; this.h[7]=(this.h[7]+hh)>>>0;
+  }
+  update(data) {
+    const u8 = (data instanceof Uint8Array) ? data : new Uint8Array(data);
+    const n = u8.length;
+    this.lo = (this.lo + n*8)>>>0; this.hi = (this.hi + Math.floor(n/0x20000000))>>>0;
+    let i = 0;
+    while (this.bl && i < n) { this.buf[this.bl++]=u8[i++]; if (this.bl===64) { this._block(this.buf,0); this.bl=0; } }
+    while (n-i>=64) { this._block(u8,i); i+=64; }
+    while (i<n) { this.buf[this.bl++]=u8[i++]; }
+    return this;
+  }
+  digest() {
+    const padLen = (this.bl < 56) ? (56-this.bl) : (120-this.bl);
+    const tail = new Uint8Array(padLen+8); tail[0]=0x80;
+    const dv = new DataView(tail.buffer); dv.setUint32(padLen,this.hi,false); dv.setUint32(padLen+4,this.lo,false);
+    let i=0;
+    while (this.bl && i<tail.length) { this.buf[this.bl++]=tail[i++]; if (this.bl===64) { this._block(this.buf,0); this.bl=0; } }
+    while (tail.length-i>=64) { this._block(tail,i); i+=64; }
+    while (i<tail.length) { this.buf[this.bl++]=tail[i++]; }
+    let hex=''; for (let j=0;j<8;j++) hex+=this.h[j].toString(16).padStart(8,'0');
+    return hex;
+  }
+}
+// 读取 Blob 计算 SHA-256（分块，不整包进内存）
+async function sha256Blob(blob) {
+  const sha = new Sha256Js();
+  let offset = 0;
+  while (offset < blob.size) {
+    const chunk = blob.slice(offset, offset + VERIFY_CHUNK);
+    sha.update(new Uint8Array(await chunk.arrayBuffer()));
+    offset += VERIFY_CHUNK;
+  }
+  return sha.digest();
+}
+
+// ===== 任务面板（上传/下载共用） =====
+function ensureTransferPanel() {
+  let p = document.getElementById('transferPanel');
+  if (p) return p;
+  p = document.createElement('div');
+  p.className = 'upload-panel'; p.id = 'transferPanel';
+  p.innerHTML = '<div class="head"><span>传输任务</span><button class="btn btn-ghost" style="padding:2px 6px;font-size:16px" onclick="toggleTransferPanel()">✕</button></div><div class="list" id="transferList"></div>';
+  document.body.appendChild(p);
+  return p;
+}
+function toggleTransferPanel() {
+  const p = document.getElementById('transferPanel');
+  if (p) p.classList.toggle('show');
+}
 
 // ===== 文件类型系统 =====
 const TYPE_MAP = {
@@ -815,33 +904,122 @@ function setView(mode) {
 // ===== 操作 =====
 function refresh() { loadDir(currentPath); }
 
+function saveBlob(blob, name) {
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url; a.download = name; a.rel = 'noopener';
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 60000);
+}
+
+// 原生下载（不校验，供打包 ZIP 等使用；服务端提供 filename*=UTF-8'' 防乱码）
 function downloadFile(fp) {
-  // a.download 用原始 Unicode 名；服务端同时提供 filename*=UTF-8''，双保险防乱码
   const name = String(fp).replace(/\\/g, '/').split('/').pop() || 'download';
   const a = document.createElement('a');
   a.href = API + '/download?path=' + encodeURIComponent(fp);
-  a.download = name;
-  a.rel = 'noopener';
-  document.body.appendChild(a);
-  a.click();
-  a.remove();
+  a.download = name; a.rel = 'noopener';
+  document.body.appendChild(a); a.click(); a.remove();
 }
 
+// 单个文件：流式下载 → 算 SHA-256 → 与服务端比对 → 一致才落盘；失败自动重试
+async function verifiedDownload(fp, itemEl, verifyEl, shaEl) {
+  const name = String(fp).replace(/\\/g, '/').split('/').pop() || 'download';
+  const MAX_RETRY = 3;
+  for (let attempt = 1; attempt <= MAX_RETRY; attempt++) {
+    try {
+      if (verifyEl) verifyEl.textContent = attempt > 1 ? `重试 ${attempt}/${MAX_RETRY}` : '获取校验值…';
+      // 1) 先取服务端期望的 sha256 + size
+      const hRes = await fetch(API + '/hash?path=' + encodeURIComponent(fp));
+      if (!hRes.ok) throw new Error('无法获取校验值 (HTTP ' + hRes.status + ')');
+      const meta = await hRes.json();
+      if (verifyEl) verifyEl.textContent = '下载中…';
+
+      // 2) 流式下载到内存 Blob，同时显示进度
+      const dRes = await fetch(API + '/download?path=' + encodeURIComponent(fp));
+      if (!dRes.ok) throw new Error('下载失败 (HTTP ' + dRes.status + ')');
+      const total = Number(dRes.headers.get('Content-Length')) || meta.size || 0;
+      const reader = dRes.body.getReader();
+      const parts = [];
+      let received = 0;
+      let lastPct = -1;
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        parts.push(value); received += value.length;
+        if (total && itemEl) {
+          const pct = Math.min(100, Math.round(received / total * 100));
+          if (pct !== lastPct) { itemEl.querySelector('.u-fill').style.width = pct + '%'; lastPct = pct; }
+          if (verifyEl) verifyEl.textContent = pct + '% · ' + fmtSize(received) + '/' + fmtSize(total);
+        }
+      }
+      const blob = new Blob(parts, { type: dRes.headers.get('Content-Type') || 'application/octet-stream' });
+      parts.length = 0;
+
+      // 3) 校验大小
+      if (meta.size != null && blob.size !== meta.size) {
+        throw new Error(`大小不符：期望 ${meta.size}，实际 ${blob.size}`);
+      }
+      // 4) 校验 SHA-256
+      if (verifyEl) verifyEl.textContent = '校验中…';
+      const actual = await sha256Blob(blob);
+      if (meta.sha256 && actual !== meta.sha256) {
+        throw new Error('SHA-256 不匹配，数据已损坏');
+      }
+      // 5) 通过 → 落盘
+      saveBlob(blob, name);
+      if (verifyEl) verifyEl.textContent = '✓ 校验通过';
+      if (shaEl) shaEl.textContent = 'SHA256 ' + actual.slice(0, 12) + '…';
+      return true;
+    } catch (e) {
+      if (attempt >= MAX_RETRY) {
+        if (verifyEl) verifyEl.textContent = '✕ ' + (e.message || '失败');
+        return false;
+      }
+      await new Promise(r => setTimeout(r, 600 * attempt));
+    }
+  }
+  return false;
+}
+
+// 批量「校验下载」：每个文件 fetch + 哈希校验，串行避免浏览器拦截
 async function batchDownload() {
   const files = [...selected].filter(fp => {
     const item = items.find(i => i.path === fp);
     return item && !item.isDir;
   });
-  if (files.length === 0) {
-    toast('请选择文件（暂不支持打包下载文件夹）', 'error');
-    return;
+  if (files.length === 0) { toast('请选择文件', 'error'); return; }
+  const panel = ensureTransferPanel(); panel.classList.add('show');
+  const list = document.getElementById('transferList');
+  list.innerHTML = '';
+  let ok = 0, fail = 0;
+  for (const fp of files) {
+    const name = String(fp).replace(/\\/g, '/').split('/').pop() || 'download';
+    const row = document.createElement('div');
+    row.className = 'upload-item';
+    row.innerHTML = `<span class="u-icon">⬇️</span><div class="u-info">
+      <div class="u-name" title="${escAttr(name)}">${esc(name)}</div>
+      <div class="u-bar"><div class="u-fill"></div></div>
+      <div class="u-speed transfer-verify">准备中…</div></div>
+      <span class="u-status transfer-status">…</span>`;
+    list.appendChild(row);
+    const okd = await verifiedDownload(fp, row, row.querySelector('.transfer-verify'), row.querySelector('.u-speed'));
+    if (okd) { row.classList.add('done'); row.querySelector('.transfer-status').textContent = '✓'; ok++; }
+    else { row.classList.add('error'); row.querySelector('.transfer-status').textContent = '✕'; fail++; }
+    await new Promise(r => setTimeout(r, 300)); // 间隔落盘，减少浏览器多下载拦截
   }
-  // 浏览器会拦截连发下载，逐个间隔触发
-  toast(`开始下载 ${files.length} 个文件…`, 'success');
-  for (let i = 0; i < files.length; i++) {
-    downloadFile(files[i]);
-    if (i < files.length - 1) await new Promise(r => setTimeout(r, 400));
-  }
+  toast(`下载完成 ${ok} 个` + (fail ? `，失败 ${fail}` : ''), fail ? 'error' : 'success');
+}
+
+// 批量「打包下载」：一次请求生成 ZIP（自带 CRC32 + __MANIFEST.json 的 SHA-256 清单）
+function batchDownloadZip() {
+  const paths = [...selected];
+  if (paths.length === 0) { toast('请选择文件或文件夹', 'error'); return; }
+  toast('正在打包 ' + paths.length + ' 项（含 SHA-256 清单）…', 'success');
+  const a = document.createElement('a');
+  a.href = API + '/pack?paths=' + encodeURIComponent(JSON.stringify(paths));
+  a.download = 'DM打包_' + new Date().toISOString().slice(0,10) + '.zip';
+  a.rel = 'noopener';
+  document.body.appendChild(a); a.click(); a.remove();
 }
 
 async function batchDelete() {
@@ -999,7 +1177,13 @@ folderInput.addEventListener('change', () => {
   if (folderInput.files.length) { uploadFiles(folderInput.files); folderInput.value = ''; }
 });
 
-function uploadOneFile(file, itemEl) {
+async function uploadOneFile(file, itemEl) {
+  // 先算本地 SHA-256（分块，不整包进内存），http 下用纯 JS 实现
+  const speedEl0 = itemEl.querySelector('.u-speed');
+  if (speedEl0) speedEl0.textContent = '计算校验值…';
+  let localSha = null;
+  try { localSha = await sha256Blob(file); } catch (_) { localSha = null; }
+
   return new Promise((resolve, reject) => {
     const xhr = new XMLHttpRequest();
     // 原始 body，服务端边收边写，不整包进内存
@@ -1011,6 +1195,9 @@ function uploadOneFile(file, itemEl) {
     xhr.timeout = 0; // 不限制大文件
     xhr.setRequestHeader('Content-Type', 'application/octet-stream');
     xhr.setRequestHeader('X-File-Name', encodeURIComponent(relPath));
+    // 完整性：把期望大小和哈希交给服务端，收完逐字节校验，不一致丢弃临时文件
+    xhr.setRequestHeader('X-File-Size', String(file.size));
+    if (localSha) xhr.setRequestHeader('X-File-SHA256', localSha);
 
     let lastLoaded = 0;
     let lastTs = performance.now();
@@ -1088,16 +1275,19 @@ async function uploadFiles(fileList) {
     while (cursor < jobs.length) {
       const idx = cursor++;
       const job = jobs[idx];
-      job.item.querySelector('.u-status').textContent = '…';
-      job.item.querySelector('.u-speed').textContent = '连接中…';
-      try {
-        await uploadOneFile(job.file, job.item);
-        job.item.classList.add('done');
-        job.item.querySelector('.u-fill').style.width = '100%';
-        job.item.querySelector('.u-status').textContent = '✓';
-        job.item.querySelector('.u-speed').textContent = '完成 · ' + fmtSize(job.file.size);
-        okCount++;
-      } catch (e) {
+        job.item.querySelector('.u-status').textContent = '…';
+        job.item.querySelector('.u-speed').textContent = '连接中…';
+        try {
+          const d = await uploadOneFile(job.file, job.item);
+          job.item.classList.add('done');
+          job.item.querySelector('.u-fill').style.width = '100%';
+          job.item.querySelector('.u-status').textContent = '✓';
+          let badge = '';
+          if (d && d.verified === 'sha256') badge = ' · SHA-256 校验通过';
+          else if (d && d.verified === 'size') badge = ' · 大小校验通过';
+          job.item.querySelector('.u-speed').textContent = '完成 · ' + fmtSize(job.file.size) + badge;
+          okCount++;
+        } catch (e) {
         job.item.classList.add('error');
         job.item.querySelector('.u-status').textContent = '✕';
         job.item.querySelector('.u-speed').textContent = e.message || '失败';
@@ -1205,10 +1395,10 @@ document.addEventListener('keydown', e => {
   if ((e.key === 'Backspace' || e.key === 'Escape') && !e.ctrlKey) {
     if (selected.size > 0) { clearSelection(); }
     else if (e.key === 'Backspace') {
-      // 返回上级
+      // 返回上级：范围用后端动态下发的 roots（termux 无 /workspace，不写死物理机路径）
       const parent = currentPath.split('/').slice(0,-1).join('/') || '/';
-      const roots = ['/workspace','/home','/root'];
-      if (roots.some(r => parent.startsWith(r)) || roots.includes(parent)) loadDir(parent);
+      const roots = (sidebarRoots || []).map(r => r.path);
+      if (roots.length === 0 || roots.some(r => parent.startsWith(r) || r.startsWith(parent))) loadDir(parent);
     }
   }
   if (e.key === 'r' && e.ctrlKey) { e.preventDefault(); refresh(); }

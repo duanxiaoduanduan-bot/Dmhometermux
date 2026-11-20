@@ -283,3 +283,22 @@ dm → postgis → apps → geodata → start
 **移植策略**：DMmedia/server.js 当前版是 Dmhome 版严格功能子集 → 整文件替换；book-reader/audio 播放器与门户两文件当前版无独立改动 → 整文件替换；tvdrama/mv/music 以 Dmhome 为基线补回 armPlay + music 居中 CSS；album 以当前版为底补丁式加搜索/续播（写真馆改进不丢）；DMChat server.js + index.html 补丁式，历史面板渲染改用当前版 `addChatMsg/fileStore` 机制（不依赖 Dmhome 的 renderBubble）。
 
 **验证**：6 播放器 + DMChat index 的内联 JS 全过 `node --check`；DMmedia server.js、DMChat server.js 语法通过；本机实测启动 DMmedia（PORT=18091）→ /api/hello 返回 serverId+8 媒体类型、/api/remotes、7 个 list 端点全 200；DMChat（PORT=18093）→ / 200、/api/chat-dates 与 /api/chat-history 未登录返回 403（鉴权正确）；无 termux 绝对路径残留。测试产物（serverId/ users.json/ chatlogs/ list 缓存）已全部还原。
+
+---
+
+## 12. 网盘完整性校验与批量传输（v2.3 · 2026-11-20）
+
+解决「批量下载容易断点坏道 / 上传中断留半截文件」。改动文件：`DMmedia/file-manager.js`、`DMmedia/file-manager.html`，文档 `DMmedia/FILE-MANAGER.md`。
+
+**根因**：旧批量下载是逐个裸 `<a download>`（无校验，网络中断即存成半截坏文件）；上传直接写目标文件、重名加 `_1` 后缀（中断留残片、无完整性校验）。
+
+**新增能力**
+
+| 改动 | 说明 |
+|------|------|
+| 两种批量下载 | 「📦 打包下载」= 一次请求打成 ZIP（纯 Node 流式 store，无系统 zip 依赖；含 `__MANIFEST.json` 记 SHA-256+大小）；「⬇️ 校验下载」= 逐文件 fetch + 大小/SHA-256 双校验 + 失败重试 3 次 |
+| 上传原子落盘 | 前端先算本地 SHA-256（内置纯 JS，http 可用）随 `X-File-Size`/`X-File-SHA256` 上传；服务端写隐藏 `.upload-part` 临时文件、边收边算哈希，校验通过才原子 `rename`，不符则 409 删除临时文件 |
+| 隐藏残片 | `.upload-part` 临时文件在 `/api/list` 中过滤，不污染视图 |
+| 新 API | `/api/hash?path=`（流式 SHA-256+大小）、`/api/pack?paths=`（批量 ZIP，可含目录递归） |
+
+**验证**：纯 JS SHA-256 过标准向量（空串/a/abc/123456789/多字节/1MB）；CRC32 过标准向量；设备上 `/api/hash` 正确、`/api/pack` 下载的 ZIP 经 Python `zipfile.testzip()` = ALL OK 且清单哈希全部匹配；上传正确=200(verified=sha256)、错误哈希与谎报大小均 409 且无文件/`.part` 残留；页面 200、服务 runit 单进程无孤儿。测试产物已清理。改动由断断 commit/push。

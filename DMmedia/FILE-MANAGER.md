@@ -2,7 +2,7 @@
 
 端口默认 **8087**（`FILE_PORT` / `config.json` → `DMmedia.files`）。  
 页面：`file-manager.html`，服务：`file-manager.js`。  
-版本：**v2.2**（可新增存储介质）。
+版本：**v2.3**（完整性校验：SHA-256 双端校验 + ZIP 打包下载）。
 
 ## 访问
 
@@ -35,6 +35,42 @@
 | POST | `/api/storage/add` | body: `{ name?, path, type?: "storage" }` |
 | POST | `/api/storage/remove` | body: `{ path }` |
 | GET/POST | `/api/shortcuts` | 全部侧边栏入口（含 storage） |
+
+## 完整性校验与批量传输（v2.3）
+
+解决「批量下载容易断点坏道 / 上传中断留半截文件」。核心思路：**传输前后都算 SHA-256，一致才落地，不一致自动丢弃或重试**。
+
+### 两种批量下载（选中文件后批量栏切换）
+
+| 按钮 | 方式 | 完整性保证 | 适用 |
+|------|------|-----------|------|
+| **📦 打包下载** | 选中项（可含文件夹）一次请求打成 **ZIP** 下载 | ZIP 自带 CRC32（解压即校验）+ 包内 `__MANIFEST.json` 记录每个文件的 SHA-256 和大小 | **推荐**：多文件/文件夹，一次下载不会被浏览器拦截 |
+| **⬇️ 校验下载** | 每个文件 `fetch` 流式下载 → 算 SHA-256 → 与服务端比对 → 一致才落盘 | 大小 + SHA-256 双校验，失败自动重试 3 次，串行避免浏览器多下载拦截 | 单个或少量关键文件 |
+
+- ZIP 打包为**纯 Node 实现**（store 模式流式输出，不依赖系统 `zip` 命令——Termux 默认无此命令），视频等本身已压缩，不二次压缩、不吃内存。
+- `__MANIFEST.json` 示例：`{ "algorithm": "sha256", "files": [ { "path": "a.mp4", "size": 12345, "sha256": "..." } ] }`，下载后可离线核对每个文件。
+
+### 上传完整性（每次上传自动执行）
+
+1. 前端上传前**分块计算本地 SHA-256**（http 下用内置纯 JS 实现，不依赖浏览器 `crypto.subtle`，因为它仅在 https/localhost 可用）。
+2. 请求头 `X-File-Size`（字节数）+ `X-File-SHA256` 交给服务端。
+3. 服务端边收边写入**隐藏临时文件** `.xxx.upload-part.<随机>`，同时算 SHA-256 并计数。
+4. 收完校验：**大小不符或哈希不符 → 409 拒绝并删除临时文件**（绝不留半截文件、不再产生 `xxx_1` 残片）；**一致 → 原子 `rename` 成正式文件**。
+5. 上传面板显示「SHA-256 校验通过」或「大小校验通过」徽标。
+6. 临时文件在目录列表中**自动隐藏**，不污染视图。
+
+> 说明：没有 `X-File-SHA256` 的老客户端仍可上传，服务端退化为「大小校验」；两端都提供时才做 SHA-256 比对。
+
+### 为什么不用浏览器原生 crypto
+
+`/api/hash` 返回的 SHA-256 供前端核对。由于网盘通常走 `http://IP:8087`（非安全上下文），浏览器 `crypto.subtle` 不可用，故前端内置了一份经过标准向量校验的纯 JS SHA-256（支持空串/多字节/1MB+ 流式分块）。
+
+### 相关 API
+
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| GET | `/api/hash?path=` | 流式算单文件 `{ path, size, sha256 }`，供下载后校验 |
+| GET/POST | `/api/pack?paths=` | `paths` = URL 编码的 JSON 数组（可含目录，递归展开）；流式返回 ZIP + `__MANIFEST.json` |
 
 ## 近期修复（v2.1）
 
@@ -87,7 +123,9 @@ multipart 仍兼容，但单次有大小上限提示；**推荐走流式上传**
 |------|------|------|
 | GET | `/api/list?path=` | 列目录 |
 | GET | `/api/download?path=` | 下载（支持 Range） |
-| POST | `/api/upload?dir=&name=` | 流式上传；头 `X-File-Name` |
+| POST | `/api/upload?dir=&name=` | 流式上传；头 `X-File-Name`、`X-File-Size`、`X-File-SHA256`（后两者用于完整性校验） |
+| GET | `/api/hash?path=` | 单文件 SHA-256 + 大小 |
+| GET/POST | `/api/pack?paths=` | 批量打包 ZIP（内嵌 SHA-256 清单） |
 | DELETE | `/api/delete` | body: `{ paths: [] }` |
 | POST | `/api/mkdir` | `{ parent, name }` |
 | POST | `/api/rename` | `{ path, name }` |
@@ -98,8 +136,8 @@ multipart 仍兼容，但单次有大小上限提示；**推荐走流式上传**
 
 ## 界面功能摘要
 
-- 列表 / 网格、排序、多选、批量下载/删除  
-- 拖拽上传、文件夹上传  
+- 列表 / 网格、排序、多选、**打包下载 / 校验下载** / 删除  
+- 拖拽上传、文件夹上传（**SHA-256 完整性校验**）  
 - 侧边栏快捷目录 + 媒体库 + 外接设备  
 - 右键：下载 / 重命名 / 复制路径 / 删除  
 

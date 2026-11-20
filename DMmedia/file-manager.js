@@ -1,6 +1,7 @@
 const http = require('http');
 const fs = require('fs');
 const path = require('path');
+const crypto = require('crypto');
 const { execSync } = require('child_process');
 
 const PORT = process.env.FILE_PORT ? Number(process.env.FILE_PORT) : 8087;
@@ -29,7 +30,11 @@ function normalizeShortcut(entry) {
   if (!p) return null;
   // 历史兼容：path: "page" → 当前服务目录
   if (p === 'page' || p === '.' || p === './') p = PAGE_DIR;
-  if (!path.isAbsolute(p) && !/^[A-Za-z]:[\\/]?/.test(p)) {
+  // 非 Windows 平台上，Windows 盘符路径（如 D:\xxx / C:\Users）是从物理机带来的残留：
+  // path.resolve 会把它当相对路径拼到 PAGE_DIR 后变成废路径 → 直接拒绝，交给 autoDiscover 重建
+  const isWindowsDrive = /^[A-Za-z]:[\\/]/.test(p) || /^[A-Za-z]:$/.test(p);
+  if (isWindowsDrive && process.platform !== 'win32') return null;
+  if (!path.isAbsolute(p) && !isWindowsDrive) {
     p = path.resolve(PAGE_DIR, p);
   }
   p = path.resolve(p);
@@ -49,7 +54,14 @@ function loadShortcuts() {
     if (fs.existsSync(SHORTCUTS_PATH)) {
       const saved = JSON.parse(fs.readFileSync(SHORTCUTS_PATH, 'utf8'));
       if (Array.isArray(saved) && saved.length > 0) {
-        return saved.map(normalizeShortcut).filter(Boolean);
+        // 只保留真实存在且可读的目录：失效路径（尤其从物理机带来的 Windows 路径）丢弃
+        const valid = saved.map(normalizeShortcut).filter(Boolean).filter(s => {
+          try { fs.accessSync(s.path, fs.constants.R_OK); return fs.statSync(s.path).isDirectory(); }
+          catch (_) { return false; }
+        });
+        if (valid.length > 0) return valid;
+        // 全部失效 → 重新自动探测 termux 真实目录并覆盖
+        return autoDiscover();
       }
     }
   } catch (_) {}
@@ -355,6 +367,207 @@ function mountDataDisks() {
   }
 }
 
+// ===== 完整性校验 / 打包核心（纯 Node，无外部命令依赖）=====
+const UPLOAD_TMP = '.upload-part'; // 上传临时文件后缀，列表里隐藏
+
+// CRC32（ZIP 用），标准 IEEE 表
+const CRC_TABLE = (() => {
+  const t = new Uint32Array(256);
+  for (let n = 0; n < 256; n++) {
+    let c = n;
+    for (let k = 0; k < 8; k++) c = (c & 1) ? (0xEDB88320 ^ (c >>> 1)) : (c >>> 1);
+    t[n] = c >>> 0;
+  }
+  return t;
+})();
+// 累积式更新（内部不 finalize），供流式分块调用
+function crc32Update(crc, buf) {
+  let c = crc;
+  for (let i = 0; i < buf.length; i++) c = CRC_TABLE[(c ^ buf[i]) & 0xFF] ^ (c >>> 8);
+  return c >>> 0;
+}
+// 一次性计算完整 CRC（内部完成初值 + finalize）
+function crc32(buf) { return (crc32Update(0xFFFFFFFF, buf) ^ 0xFFFFFFFF) >>> 0; }
+
+// DOS 时间/日期（ZIP local header 用）
+function dosDateTime(d = new Date()) {
+  const time = (d.getHours() << 11) | (d.getMinutes() << 5) | (Math.floor(d.getSeconds() / 2));
+  const date = ((d.getFullYear() - 1980) << 9) | ((d.getMonth() + 1) << 5) | d.getDate();
+  return { time: time & 0xFFFF, date: date & 0xFFFF };
+}
+
+/**
+ * 流式打包多个文件为 ZIP（store 模式，不压缩，快且省内存；视频等本身已压缩）。
+ * 每个文件先算 SHA-256 + size 写入 __MANIFEST.json，保证归档自带完整性清单。
+ * 通过 res 流式输出，不整包进内存。
+ */
+function streamZip(files, res, archiveName) {
+  // files: [{src, name}]  name = zip 内相对路径
+  const entries = [];
+  // 先探测每个文件大小并生成清单数据
+  for (const f of files) {
+    try {
+      const st = fs.statSync(f.src);
+      if (!st.isFile()) continue;
+      entries.push({ ...f, size: st.size, mtime: st.mtime });
+    } catch (_) {}
+  }
+  const manifest = {
+    generatedAt: new Date().toISOString(),
+    algorithm: 'sha256',
+    note: '逐文件 sha256；下载后可用校验工具核对，或在本网盘用「校验」功能',
+    files: [],
+  };
+  // 清单里先放占位，hash 在写流时算
+  for (const e of entries) {
+    manifest.files.push({ path: e.name, size: e.size, sha256: null });
+  }
+
+  const safeAscii = String(archiveName || 'files').replace(/[^\\x20-\\x7E]/g, '_').replace(/[\\/\\:*?"<>|]/g, '_') || 'files';
+  const utfName = encodeURIComponent(archiveName || 'files');
+  res.writeHead(200, {
+    'Content-Type': 'application/zip',
+    'Content-Disposition': `attachment; filename="${safeAscii}.zip"; filename*=UTF-8''${utfName}.zip`,
+    'Cache-Control': 'private, max-age=0',
+  });
+
+  const central = [];
+  let offset = 0;
+  let aborted = false;
+  res.on('close', () => { aborted = true; });
+
+  // 预计算每个文件的 crc + sha256（流式），再写头+数据，保证 local header 里的 crc/size 正确
+  function inspectFile(src, cb) {
+    const sha = crypto.createHash('sha256');
+    let crc = 0xFFFFFFFF;
+    let size = 0;
+    const rs = fs.createReadStream(src, { highWaterMark: 1024 * 1024 });
+    rs.on('data', chunk => { sha.update(chunk); crc = crc32Update(crc, chunk); size += chunk.length; });
+    rs.on('error', () => cb(null));
+    rs.on('end', () => cb({ size, crc: (crc ^ 0xFFFFFFFF) >>> 0, sha256: sha.digest('hex') }));
+  }
+
+  const all = entries.map(e => ({ ...e }));
+  let idx = 0;
+  function putNext() {
+    if (aborted || idx >= all.length) return writeManifest();
+    const e = all[idx++];
+    inspectFile(e.src, info => {
+      if (!info) return putNext();
+      const nameBuf = Buffer.from(e.name, 'utf8');
+      const flags = 0x0800;
+      const { time, date } = dosDateTime(e.mtime);
+      const local = Buffer.alloc(30);
+      local.writeUInt32LE(0x04034B50, 0);
+      local.writeUInt16LE(20, 4);
+      local.writeUInt16LE(flags, 6);
+      local.writeUInt16LE(0, 8);
+      local.writeUInt16LE(time, 10);
+      local.writeUInt16LE(date, 12);
+      local.writeUInt32LE(info.crc, 14);
+      local.writeUInt32LE(info.size, 18);
+      local.writeUInt32LE(info.size, 22);
+      local.writeUInt16LE(nameBuf.length, 26);
+      local.writeUInt16LE(0, 28);
+      const startOffset = offset;
+      res.write(local);
+      res.write(nameBuf);
+      offset += 30 + nameBuf.length + info.size;
+      // 更新清单 hash
+      const mf = manifest.files.find(m => m.path === e.name);
+      if (mf) mf.sha256 = info.sha256;
+      // 写 central
+      const centralRec = Buffer.alloc(46);
+      centralRec.writeUInt32LE(0x02014B50, 0);
+      centralRec.writeUInt16LE(20, 4);
+      centralRec.writeUInt16LE(20, 6);
+      centralRec.writeUInt16LE(flags, 8);
+      centralRec.writeUInt16LE(0, 10);
+      centralRec.writeUInt16LE(time, 12);
+      centralRec.writeUInt16LE(date, 14);
+      centralRec.writeUInt32LE(info.crc, 16);
+      centralRec.writeUInt32LE(info.size, 20);
+      centralRec.writeUInt32LE(info.size, 24);
+      centralRec.writeUInt16LE(nameBuf.length, 28);
+      centralRec.writeUInt16LE(0, 30);
+      centralRec.writeUInt16LE(0, 32);
+      centralRec.writeUInt16LE(0, 34);
+      centralRec.writeUInt16LE(0, 36);
+      centralRec.writeUInt32LE(0, 38);
+      centralRec.writeUInt32LE(startOffset, 42);
+      central.push(centralRec, nameBuf);
+      // 流式输出文件内容
+      const rs = fs.createReadStream(e.src, { highWaterMark: 1024 * 1024 });
+      rs.on('data', chunk => { if (!aborted) res.write(chunk); });
+      rs.on('error', () => {});
+      rs.on('end', putNext);
+    });
+  }
+
+  function writeManifest() {
+    if (aborted) return;
+    // 清单内容需要在 hash 都填好后重新生成
+    const mfBuf = Buffer.from(JSON.stringify(manifest, null, 2), 'utf8');
+    const nameBuf = Buffer.from('__MANIFEST.json', 'utf8');
+    const flags = 0x0800;
+    const { time, date } = dosDateTime();
+    const crc = crc32(mfBuf);
+    const local = Buffer.alloc(30);
+    local.writeUInt32LE(0x04034B50, 0);
+    local.writeUInt16LE(20, 4);
+    local.writeUInt16LE(flags, 6);
+    local.writeUInt16LE(0, 8);
+    local.writeUInt16LE(time, 10);
+    local.writeUInt16LE(date, 12);
+    local.writeUInt32LE(crc, 14);
+    local.writeUInt32LE(mfBuf.length, 18);
+    local.writeUInt32LE(mfBuf.length, 22);
+    local.writeUInt16LE(nameBuf.length, 26);
+    local.writeUInt16LE(0, 28);
+    const startOffset = offset;
+    res.write(local); res.write(nameBuf); res.write(mfBuf);
+    offset += 30 + nameBuf.length + mfBuf.length;
+    const centralRec = Buffer.alloc(46);
+    centralRec.writeUInt32LE(0x02014B50, 0);
+    centralRec.writeUInt16LE(20, 4);
+    centralRec.writeUInt16LE(20, 6);
+    centralRec.writeUInt16LE(flags, 8);
+    centralRec.writeUInt16LE(0, 10);
+    centralRec.writeUInt16LE(time, 12);
+    centralRec.writeUInt16LE(date, 14);
+    centralRec.writeUInt32LE(crc, 16);
+    centralRec.writeUInt32LE(mfBuf.length, 20);
+    centralRec.writeUInt32LE(mfBuf.length, 24);
+    centralRec.writeUInt16LE(nameBuf.length, 28);
+    centralRec.writeUInt16LE(0, 30);
+    centralRec.writeUInt16LE(0, 32);
+    centralRec.writeUInt16LE(0, 34);
+    centralRec.writeUInt16LE(0, 36);
+    centralRec.writeUInt32LE(0, 38);
+    centralRec.writeUInt32LE(startOffset, 42);
+    central.push(centralRec, nameBuf);
+
+    const cdSize = central.reduce((s, b) => s + b.length, 0);
+    // 记录数 = 实际写入的文件 + 清单本身（central 里每项是 46 字节记录 + 文件名）
+    let count = 1; // manifest
+    for (let i = 0; i < manifest.files.length; i++) if (manifest.files[i].sha256 != null) count++;
+    const eocd = Buffer.alloc(22);
+    eocd.writeUInt32LE(0x06054B50, 0);
+    eocd.writeUInt16LE(0, 4);
+    eocd.writeUInt16LE(0, 6);
+    eocd.writeUInt16LE(count, 8);
+    eocd.writeUInt16LE(count, 10);
+    eocd.writeUInt32LE(cdSize, 12);
+    eocd.writeUInt32LE(offset, 16);
+    eocd.writeUInt16LE(0, 20);
+    for (const b of central) res.write(b);
+    res.write(eocd);
+    res.end();
+  }
+
+  putNext();
+}
+
 const MIME = {
   '.html':'text/html; charset=utf-8','.js':'application/javascript',
   '.css':'text/css','.json':'application/json',
@@ -420,6 +633,8 @@ const server = http.createServer((req, res) => {
       const items = [];
       
       for (const e of entries) {
+        // 隐藏上传中的临时分片（.xxx.upload-part.xxxx）
+        if (e.name.includes('.' + UPLOAD_TMP + '.')) continue;
         const fp = path.join(browsePath, e.name);
         try {
           const st = fs.statSync(fp);
@@ -596,38 +811,69 @@ const server = http.createServer((req, res) => {
       const subDir = safeParts.slice(0, -1).join(path.sep);
       fs.mkdirSync(path.join(resolved, subDir), { recursive: true });
 
-      let finalName = finalBase;
-      let counter = 1;
-      const base = path.basename(finalBase, path.extname(finalBase));
-      const ext = path.extname(finalBase);
-      while (fs.existsSync(path.join(resolved, subDir, finalName))) {
-        finalName = base + '_' + (counter++) + ext;
+      // 完整性校验：前端可带期望大小与 SHA-256
+      let expectSize = null;
+      if (req.headers['x-file-size'] != null && req.headers['x-file-size'] !== '') {
+        const n = Number(req.headers['x-file-size']);
+        if (Number.isFinite(n) && n >= 0) expectSize = n;
       }
-      const filePath = path.join(resolved, subDir, finalName);
-      const ws = fs.createWriteStream(filePath, { highWaterMark: 1024 * 1024 });
+      const expectSha = String(req.headers['x-file-sha256'] || '').toLowerCase() || null;
+
+      // 写到隐藏临时文件，校验通过后再原子改名为正式文件（杜绝半截文件落盘）
+      const tmpName = '.' + finalBase + '.' + UPLOAD_TMP + '.' + crypto.randomBytes(6).toString('hex');
+      const tmpPath = path.join(resolved, subDir, tmpName);
+      const ws = fs.createWriteStream(tmpPath, { highWaterMark: 1024 * 1024 });
+      const sha = crypto.createHash('sha256');
       let written = 0;
       let finished = false;
 
-      const fail = (msg, code = 500) => {
+      const fail = (msg, code = 409) => {
         if (finished) return;
         finished = true;
         try { ws.destroy(); } catch (_) {}
-        try { fs.unlinkSync(filePath); } catch (_) {}
+        try { fs.unlinkSync(tmpPath); } catch (_) {}
         if (!res.headersSent) {
           res.writeHead(code, { 'Content-Type': 'application/json; charset=utf-8' });
           res.end(JSON.stringify({ ok: false, error: msg }));
         }
       };
 
-      req.on('data', (chunk) => { written += chunk.length; });
+      req.on('data', (chunk) => { written += chunk.length; sha.update(chunk); });
       req.on('aborted', () => fail('客户端中断上传', 499));
       req.on('error', (e) => fail(e.message));
       ws.on('error', (e) => fail(e.message));
       ws.on('finish', () => {
         if (finished) return;
+        // 大小不符 → 直接判失败，丢弃临时文件
+        if (expectSize != null && written !== expectSize) {
+          return fail(`文件不完整：期望 ${expectSize} 字节，实际收到 ${written} 字节`, 409);
+        }
+        const actualSha = sha.digest('hex');
+        // 哈希不符 → 内容损坏，丢弃
+        if (expectSha && actualSha !== expectSha) {
+          return fail('校验失败：文件内容与发送方不一致（SHA-256 不匹配）', 409);
+        }
+        // 校验通过 → 计算最终文件名（避开重名）并原子改名
+        let finalName = finalBase;
+        let counter = 1;
+        const base = path.basename(finalBase, path.extname(finalBase));
+        const ext = path.extname(finalBase);
+        while (fs.existsSync(path.join(resolved, subDir, finalName))) {
+          finalName = base + '_' + (counter++) + ext;
+        }
+        const filePath = path.join(resolved, subDir, finalName);
+        try {
+          fs.renameSync(tmpPath, filePath);
+        } catch (e) {
+          return fail('保存失败：' + e.message, 500);
+        }
         finished = true;
         res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
-        res.end(JSON.stringify({ ok: true, name: finalName, path: filePath, size: written, files: [{ name: finalName, size: written }] }));
+        res.end(JSON.stringify({
+          ok: true, name: finalName, path: filePath, size: written, sha256: actualSha,
+          verified: expectSha ? 'sha256' : (expectSize != null ? 'size' : 'none'),
+          files: [{ name: finalName, size: written, sha256: actualSha }],
+        }));
       });
       req.pipe(ws);
       return;
@@ -897,6 +1143,108 @@ const server = http.createServer((req, res) => {
       } catch (e) {
         res.writeHead(400, { 'Content-Type': 'application/json; charset=utf-8' });
         res.end(JSON.stringify({ ok: false, error: e.message }));
+      }
+    });
+    return;
+  }
+
+  // === API: 单文件 SHA-256（流式，供前端下载后校验）===
+  if (reqPath === '/api/hash' && method === 'GET') {
+    const filePath = url.searchParams.get('path');
+    if (!filePath) {
+      res.writeHead(400, { 'Content-Type': 'application/json; charset=utf-8' });
+      return res.end(JSON.stringify({ error: '缺少 path' }));
+    }
+    const resolved = path.resolve(filePath);
+    if (!isPathSafe(resolved)) {
+      res.writeHead(403, { 'Content-Type': 'application/json; charset=utf-8' });
+      return res.end(JSON.stringify({ error: '禁止访问' }));
+    }
+    try {
+      const st = fs.statSync(resolved);
+      if (!st.isFile()) throw new Error('不是文件');
+      const sha = crypto.createHash('sha256');
+      const rs = fs.createReadStream(resolved, { highWaterMark: 1024 * 1024 });
+      rs.on('data', c => sha.update(c));
+      rs.on('error', e => {
+        if (!res.headersSent) {
+          res.writeHead(500, { 'Content-Type': 'application/json; charset=utf-8' });
+          res.end(JSON.stringify({ error: e.message }));
+        }
+      });
+      rs.on('end', () => {
+        res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
+        res.end(JSON.stringify({ path: resolved, size: st.size, sha256: sha.digest('hex') }));
+      });
+    } catch (e) {
+      res.writeHead(404, { 'Content-Type': 'application/json; charset=utf-8' });
+      return res.end(JSON.stringify({ error: e.message }));
+    }
+    return;
+  }
+
+  // === API: 批量打包下载为 ZIP（纯 Node 流式 + 内嵌 SHA-256 清单）===
+  // 支持 GET ?paths=<urlencoded JSON数组> 或 POST body {paths:[...]}
+  if (reqPath === '/api/pack' && (method === 'GET' || method === 'POST')) {
+    const respond = (pathsRaw) => {
+      let paths = [];
+      try {
+        if (Array.isArray(pathsRaw)) paths = pathsRaw;
+        else if (typeof pathsRaw === 'string') paths = JSON.parse(pathsRaw);
+      } catch (_) {}
+      if (!Array.isArray(paths) || paths.length === 0) {
+        res.writeHead(400, { 'Content-Type': 'application/json; charset=utf-8' });
+        return res.end(JSON.stringify({ error: '缺少要打包的文件路径' }));
+      }
+      // 展开目录为文件，收集 zip 内相对路径
+      const files = [];
+      const seen = new Set();
+      function addFile(src, zipName) {
+        const rp = path.resolve(src);
+        if (seen.has(rp)) return;
+        if (!isPathSafe(rp)) return;
+        try {
+          if (!fs.statSync(rp).isFile()) return;
+        } catch (_) { return; }
+        seen.add(rp);
+        files.push({ src: rp, name: zipName || path.basename(rp) });
+      }
+      function walk(dir, relBase) {
+        let ents = [];
+        try { ents = fs.readdirSync(dir, { withFileTypes: true }); } catch (_) { return; }
+        for (const e of ents) {
+          if (e.name.includes('.' + UPLOAD_TMP + '.')) continue;
+          const full = path.join(dir, e.name);
+          const rel = relBase ? relBase + '/' + e.name : e.name;
+          if (e.isDirectory()) walk(full, rel);
+          else if (e.isFile()) addFile(full, rel);
+        }
+      }
+      for (const p of paths) {
+        const rp = path.resolve(String(p));
+        if (!isPathSafe(rp)) continue;
+        try {
+          const st = fs.statSync(rp);
+          if (st.isDirectory()) walk(rp, path.basename(rp));
+          else if (st.isFile()) addFile(rp, path.basename(rp));
+        } catch (_) {}
+      }
+      if (files.length === 0) {
+        res.writeHead(404, { 'Content-Type': 'application/json; charset=utf-8' });
+        return res.end(JSON.stringify({ error: '没有可打包的文件' }));
+      }
+      return streamZip(files, res, 'DM打包_' + new Date().toISOString().slice(0, 10));
+    };
+    if (method === 'GET') {
+      return respond(url.searchParams.get('paths'));
+    }
+    let body = '';
+    req.on('data', c => body += c);
+    req.on('end', () => {
+      try { respond(JSON.parse(body || '{}').paths); }
+      catch (e) {
+        res.writeHead(400, { 'Content-Type': 'application/json; charset=utf-8' });
+        res.end(JSON.stringify({ error: e.message }));
       }
     });
     return;
