@@ -302,3 +302,15 @@ dm → postgis → apps → geodata → start
 | 新 API | `/api/hash?path=`（流式 SHA-256+大小）、`/api/pack?paths=`（批量 ZIP，可含目录递归） |
 
 **验证**：纯 JS SHA-256 过标准向量（空串/a/abc/123456789/多字节/1MB）；CRC32 过标准向量；设备上 `/api/hash` 正确、`/api/pack` 下载的 ZIP 经 Python `zipfile.testzip()` = ALL OK 且清单哈希全部匹配；上传正确=200(verified=sha256)、错误哈希与谎报大小均 409 且无文件/`.part` 残留；页面 200、服务 runit 单进程无孤儿。测试产物已清理。改动由断断 commit/push。
+
+---
+
+## 13. 网盘断点续传与秒传（v2.4 · 2026-11-20）
+
+在上节完整性校验基础上补齐断点续传。改动：`DMmedia/file-manager.js`、`DMmedia/file-manager.html`，文档 `DMmedia/FILE-MANAGER.md`。
+
+**上传续传**：新增 `/api/upload-resume`（秒传检测 + 断点偏移）；`/api/upload` 改用稳定分片 `.xxx.upload-part`（`X-File-Id` = 文件 sha）+ `X-File-Offset` 追加写，中断保留分片；收齐后对整文件流式重算 SHA-256，一致才原子落盘；谎报 offset 返回 409 `resumeNeeded` 让前端重查；分片在列表隐藏、24h 自动清理。前端上传前查断点、只发缺失部分、中断自动重连（4 次）重查断点，UI 显示「秒传 / 续传自 X%」。
+
+**下载续传**：服务端 `/api/download` 原本已支持 HTTP Range(206)，无需改后端；文件右键新增「复制续传命令（PC）」，生成 `curl -L -C -` 与 `aria2c -c` 命令，PC 端中断重跑同一命令即续传。浏览器端不做持久化续传（OPFS/IndexedDB 在手机 Web 不稳、大文件易 OOM）。
+
+**验证（真机 192.168.1.21）**：`node --check` 前后端通过；实测「传 4 字节中断 → 查得 offset=4 → 续传 6 字节 → 文件 = abcdefghij 且整文件 sha 匹配、resumed=true」；秒传 instant=true；谎报 offset 得 409 resumeNeeded 且原文件无损；下载 `Range: bytes=4-9` 返回 206 + Content-Range，`curl -C -` 拼出完整文件；列表不泄漏分片；服务单进程无孤儿；测试产物已清理。改动由断断 commit/push。

@@ -368,7 +368,50 @@ function mountDataDisks() {
 }
 
 // ===== 完整性校验 / 打包核心（纯 Node，无外部命令依赖）=====
-const UPLOAD_TMP = '.upload-part'; // 上传临时文件后缀，列表里隐藏
+const UPLOAD_TMP = '.upload-part'; // 上传临时分片后缀，列表里隐藏
+
+// 断点续传：记录本次进程用到过的上传目录（用于分片过期清理）
+const UPLOAD_DIRS = new Set();
+
+// 断点续传：分片 id 只允许安全字符，避免路径穿越
+function safePartId(id) {
+  return String(id || '').replace(/[^A-Za-z0-9_-]/g, '').slice(0, 72) || 'anon';
+}
+function partPathFor(dir, subDir, id) {
+  return path.join(dir, subDir, '.' + safePartId(id) + '.' + UPLOAD_TMP);
+}
+// 流式算文件 SHA-256（续传收齐后对整文件校验用，不整包进内存）
+function hashFile(fp) {
+  return new Promise((resolve, reject) => {
+    const h = crypto.createHash('sha256');
+    const rs = fs.createReadStream(fp, { highWaterMark: 1024 * 1024 });
+    rs.on('data', c => h.update(c));
+    rs.on('error', reject);
+    rs.on('end', () => resolve(h.digest('hex')));
+  });
+}
+// 定时清理超过 24 小时未完成的上传分片（前端中途放弃的残留）
+function cleanupStaleParts() {
+  let cleaned = 0;
+  function walk(d) {
+    let entries;
+    try { entries = fs.readdirSync(d, { withFileTypes: true }); } catch (_) { return; }
+    for (const e of entries) {
+      const fp = path.join(d, e.name);
+      if (e.isDirectory()) { if (!e.name.startsWith('.')) walk(fp); continue; }
+      if (!e.name.includes(UPLOAD_TMP)) continue;
+      try {
+        const st = fs.statSync(fp);
+        if (Date.now() - st.mtimeMs > 24 * 3600 * 1000) { fs.unlinkSync(fp); cleaned++; }
+      } catch (_) {}
+    }
+  }
+  walk(PAGE_DIR);
+  // 清理本次进程上传过的目录（含外接存储根）
+  for (const d of UPLOAD_DIRS) { if (d !== PAGE_DIR) walk(d); }
+  if (cleaned) console.log(`[cleanupStaleParts] removed ${cleaned} stale upload part(s)`);
+}
+setInterval(cleanupStaleParts, 3600 * 1000).unref?.();
 
 // CRC32（ZIP 用），标准 IEEE 表
 const CRC_TABLE = (() => {
@@ -633,8 +676,8 @@ const server = http.createServer((req, res) => {
       const items = [];
       
       for (const e of entries) {
-        // 隐藏上传中的临时分片（.xxx.upload-part.xxxx）
-        if (e.name.includes('.' + UPLOAD_TMP + '.')) continue;
+        // 隐藏上传中的临时分片（.xxx.upload-part[.随机后缀]）
+        if (e.name.includes(UPLOAD_TMP)) continue;
         const fp = path.join(browsePath, e.name);
         try {
           const st = fs.statSync(fp);
@@ -819,39 +862,66 @@ const server = http.createServer((req, res) => {
       }
       const expectSha = String(req.headers['x-file-sha256'] || '').toLowerCase() || null;
 
-      // 写到隐藏临时文件，校验通过后再原子改名为正式文件（杜绝半截文件落盘）
-      const tmpName = '.' + finalBase + '.' + UPLOAD_TMP + '.' + crypto.randomBytes(6).toString('hex');
-      const tmpPath = path.join(resolved, subDir, tmpName);
-      const ws = fs.createWriteStream(tmpPath, { highWaterMark: 1024 * 1024 });
-      const sha = crypto.createHash('sha256');
-      let written = 0;
+      // ===== 断点续传核心 =====
+      // 稳定分片 id（前端用 文件名+大小+sha 生成），同名同内容重连能续上；老前端无 id 时回退到文件名+大小
+      const rawId = String(req.headers['x-file-id'] || '');
+      const fileId = rawId || (finalBase + '|' + (expectSize == null ? '?' : expectSize));
+      let claimOffset = parseInt(req.headers['x-file-offset'] || '0', 10);
+      if (!Number.isFinite(claimOffset) || claimOffset < 0) claimOffset = 0;
+
+      // 稳定分片路径（无随机后缀），中断后保留，下次续写
+      const tmpPath = partPathFor(resolved, subDir, fileId);
+      UPLOAD_DIRS.add(resolved);
+      // 以服务端实际分片大小为准；前端声明对不上则让它重新查 resume
+      let realOffset = 0;
+      try { realOffset = fs.statSync(tmpPath).size; } catch (_) {}
+      if (realOffset !== claimOffset) {
+        res.writeHead(409, { 'Content-Type': 'application/json; charset=utf-8' });
+        return res.end(JSON.stringify({ ok: false, error: '分片偏移不匹配，请重新查询续传点', resumeNeeded: true, offset: realOffset }));
+      }
+      // 分片已完成（offset 已等于期望大小）→ 前端应已秒传；保险起见直接校验落盘，不重复接收
+      if (expectSize != null && realOffset === expectSize) {
+        // 落到下面的收尾逻辑处理（本次没有数据流入，ws 会立即 finish）
+      }
+
+      const appendMode = realOffset > 0;
+      const ws = fs.createWriteStream(tmpPath, { flags: appendMode ? 'a' : 'w', highWaterMark: 1024 * 1024 });
+      let written = realOffset;
       let finished = false;
 
-      const fail = (msg, code = 409) => {
+      // keepPart=true：网络中断，保留已收分片供续传；false：内容损坏，丢弃
+      const fail = (msg, code = 409, keepPart = false) => {
         if (finished) return;
         finished = true;
         try { ws.destroy(); } catch (_) {}
-        try { fs.unlinkSync(tmpPath); } catch (_) {}
+        if (!keepPart) { try { fs.unlinkSync(tmpPath); } catch (_) {} }
         if (!res.headersSent) {
           res.writeHead(code, { 'Content-Type': 'application/json; charset=utf-8' });
-          res.end(JSON.stringify({ ok: false, error: msg }));
+          res.end(JSON.stringify({ ok: false, error: msg, offset: keepPart ? written : 0 }));
         }
       };
 
-      req.on('data', (chunk) => { written += chunk.length; sha.update(chunk); });
-      req.on('aborted', () => fail('客户端中断上传', 499));
-      req.on('error', (e) => fail(e.message));
-      ws.on('error', (e) => fail(e.message));
-      ws.on('finish', () => {
+      req.on('data', (chunk) => { written += chunk.length; });
+      req.on('aborted', () => fail('客户端中断上传（分片已保留，可续传）', 499, true));
+      req.on('error', () => fail('网络中断（分片已保留，可续传）', 499, true));
+      ws.on('error', (e) => fail(e.message, 500, false));
+      ws.on('finish', async () => {
         if (finished) return;
-        // 大小不符 → 直接判失败，丢弃临时文件
+        // 大小不符：不足说明传了一半（保留分片让前端续传），超出说明数据错乱（丢弃）
         if (expectSize != null && written !== expectSize) {
-          return fail(`文件不完整：期望 ${expectSize} 字节，实际收到 ${written} 字节`, 409);
+          if (written < expectSize) return fail(`分片未收齐：期望 ${expectSize} 字节，已有 ${written} 字节，可续传`, 409, true);
+          return fail(`分片超出：期望 ${expectSize} 字节，实际 ${written} 字节`, 409, false);
         }
-        const actualSha = sha.digest('hex');
-        // 哈希不符 → 内容损坏，丢弃
+        // 对整文件流式算哈希（含之前续传的部分），不整包进内存
+        let actualSha;
+        try {
+          actualSha = await hashFile(tmpPath);
+        } catch (e) {
+          return fail('校验读取失败：' + e.message, 500, false);
+        }
+        if (finished) return;
         if (expectSha && actualSha !== expectSha) {
-          return fail('校验失败：文件内容与发送方不一致（SHA-256 不匹配）', 409);
+          return fail('校验失败：文件内容与发送方不一致（SHA-256 不匹配）', 409, false);
         }
         // 校验通过 → 计算最终文件名（避开重名）并原子改名
         let finalName = finalBase;
@@ -865,13 +935,14 @@ const server = http.createServer((req, res) => {
         try {
           fs.renameSync(tmpPath, filePath);
         } catch (e) {
-          return fail('保存失败：' + e.message, 500);
+          return fail('保存失败：' + e.message, 500, false);
         }
         finished = true;
         res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
         res.end(JSON.stringify({
           ok: true, name: finalName, path: filePath, size: written, sha256: actualSha,
           verified: expectSha ? 'sha256' : (expectSize != null ? 'size' : 'none'),
+          resumed: appendMode, resumedBytes: realOffset,
           files: [{ name: finalName, size: written, sha256: actualSha }],
         }));
       });
@@ -1145,6 +1216,74 @@ const server = http.createServer((req, res) => {
         res.end(JSON.stringify({ ok: false, error: e.message }));
       }
     });
+    return;
+  }
+
+  // === API: 上传续传查询（秒传检测 + 断点偏移）===
+  if (reqPath === '/api/upload-resume' && method === 'GET') {
+    const uploadDir = url.searchParams.get('dir') || PAGE_DIR;
+    const resolved = path.resolve(uploadDir);
+    if (!isPathSafe(resolved)) {
+      res.writeHead(403, { 'Content-Type': 'application/json; charset=utf-8' });
+      return res.end(JSON.stringify({ ok: false, error: '上传目录不在允许范围内' }));
+    }
+    let filename = url.searchParams.get('name') || '';
+    try { filename = decodeURIComponent(filename); } catch (_) {}
+    const expectSize = Number(url.searchParams.get('size') || 0);
+    const expectSha = String(url.searchParams.get('sha') || '').toLowerCase();
+    const rawId = String(url.searchParams.get('id') || '');
+    const fileId = rawId || (filename + '|' + (Number.isFinite(expectSize) ? expectSize : '?'));
+
+    // 解析出与上传一致的目标目录/文件名
+    const rawParts = String(filename).split(/[\\/]+/).filter(Boolean);
+    const safeParts = rawParts.filter(p => p !== '.' && p !== '..');
+    let finalBase = safeParts.length ? safeParts[safeParts.length - 1] : 'upload.bin';
+    finalBase = finalBase.replace(/[\\\/:*?"<>|\x00-\x1f]/g, '_');
+    const subDir = safeParts.slice(0, -1).join(path.sep);
+    const partPath = partPathFor(resolved, subDir, fileId);
+    const targetPath = path.join(resolved, subDir, finalBase);
+
+    const sendResume = () => {
+      // 续传点：已存分片大小（超过期望大小视为损坏，忽略）
+      let offset = 0;
+      try {
+        const st = fs.statSync(partPath);
+        if (st.isFile() && (!expectSize || st.size <= expectSize)) offset = st.size;
+        else if (st.size > expectSize) { try { fs.unlinkSync(partPath); } catch (_) {} }
+      } catch (_) {}
+      res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
+      res.end(JSON.stringify({ ok: true, instant: false, offset, expectSize, name: finalBase }));
+    };
+
+    // 秒传：目标文件已存在且大小一致（有 sha 则再校验哈希）
+    let candidate = null;
+    try {
+      if (fs.existsSync(targetPath)) {
+        const st = fs.statSync(targetPath);
+        if (st.isFile() && st.size === expectSize) candidate = st;
+      }
+    } catch (_) {}
+    if (candidate) {
+      if (!expectSha) {
+        res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
+        return res.end(JSON.stringify({
+          ok: true, instant: true, name: finalBase, path: targetPath,
+          size: candidate.size, sha256: null,
+        }));
+      }
+      return hashFile(targetPath)
+        .then(h => {
+          if (h === expectSha) {
+            res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
+            res.end(JSON.stringify({
+              ok: true, instant: true, name: finalBase, path: targetPath,
+              size: candidate.size, sha256: expectSha,
+            }));
+          } else sendResume();
+        })
+        .catch(sendResume);
+    }
+    sendResume();
     return;
   }
 

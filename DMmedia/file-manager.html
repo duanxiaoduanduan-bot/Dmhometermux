@@ -1120,6 +1120,7 @@ function showCMenu(e, fp, isDir) {
   let html = '';
   if (count === 1 && !isDir) {
     html += `<div class="item" data-cmd="download">⬇️ 下载</div>`;
+    html += `<div class="item" data-cmd="resumecmd">🔗 复制续传命令（PC）</div>`;
   }
   if (count === 1) {
     html += `<div class="item" data-cmd="rename">✏️ 重命名</div>`;
@@ -1148,6 +1149,7 @@ function showCMenu(e, fp, isDir) {
       const cmd = item.dataset.cmd;
       hideCMenu();
       if (cmd === 'download') downloadFile(fp);
+      else if (cmd === 'resumecmd') copyResumeCmd(fp, name);
       else if (cmd === 'rename') showRename(fp, name);
       else if (cmd === 'copy') copyPath(fp);
       else if (cmd === 'open') loadDir(fp);
@@ -1164,6 +1166,41 @@ function copyPath(fp) {
   hideCMenu();
 }
 
+// 生成 PC 端可断点续传的下载命令（利用服务端已支持的 HTTP Range）
+// curl: -C - 自动续传；aria2c: -c 续传 + -x 多线程分片，断了重跑同一条命令即可接着下
+function copyResumeCmd(fp, name) {
+  const dlUrl = API + '/download?path=' + encodeURIComponent(fp);
+  const outName = name || 'download';
+  const curlCmd = `curl -L -C - -o "${outName}" "${dlUrl}"`;
+  const ariaCmd = `aria2c -c -x4 -s4 -o "${outName}" "${dlUrl}"`;
+  const overlay = document.getElementById('modalOverlay');
+  const box = document.getElementById('modalBox');
+  box.innerHTML = `
+    <h3>🔗 PC 端断点续传命令</h3>
+    <div class="sub">在电脑终端粘贴执行；中断后重跑同一条命令会从断点接着下。服务端已支持 Range。</div>
+    <div style="font-size:12px;color:var(--muted);margin:8px 0 4px">curl（多数系统自带）</div>
+    <textarea id="resumeCurl" readonly style="width:100%;height:60px;font-family:monospace;font-size:11px;box-sizing:border-box">${esc(curlCmd)}</textarea>
+    <div style="font-size:12px;color:var(--muted);margin:8px 0 4px">aria2c（多线程更快，需安装 aria2）</div>
+    <textarea id="resumeAria" readonly style="width:100%;height:60px;font-family:monospace;font-size:11px;box-sizing:border-box">${esc(ariaCmd)}</textarea>
+    <div class="btns">
+      <button class="btn btn-outline" onclick="hideModal()">关闭</button>
+      <button class="btn btn-outline" id="copyAriaBtn">复制 aria2c</button>
+      <button class="btn btn-primary" id="copyCurlBtn">复制 curl</button>
+    </div>`;
+  overlay.classList.add('show');
+  const copy = (id, label) => {
+    const text = document.getElementById(id).value;
+    navigator.clipboard.writeText(text)
+      .then(() => toast(label + '已复制', 'success'))
+      .catch(() => {
+        const ta = document.getElementById(id); ta.focus(); ta.select();
+        toast('自动复制失败，已选中，请手动 Ctrl+C', 'error');
+      });
+  };
+  document.getElementById('copyCurlBtn').addEventListener('click', () => copy('resumeCurl', 'curl 命令'));
+  document.getElementById('copyAriaBtn').addEventListener('click', () => copy('resumeAria', 'aria2c 命令'));
+}
+
 // ===== 上传（原始二进制流 + 并发 + 速度显示，保证无损）=====
 function triggerUpload() { document.getElementById('fileInput').click(); }
 function triggerFolderUpload() { document.getElementById('folderInput').click(); }
@@ -1177,71 +1214,110 @@ folderInput.addEventListener('change', () => {
   if (folderInput.files.length) { uploadFiles(folderInput.files); folderInput.value = ''; }
 });
 
+async // 上传一个文件（带断点续传 + 秒传 + 自动重连）
+// 流程：算本地 sha → 查 /api/upload-resume（秒传/断点）→ 只发缺失分片 → 失败重连再查断点
 async function uploadOneFile(file, itemEl) {
-  // 先算本地 SHA-256（分块，不整包进内存），http 下用纯 JS 实现
   const speedEl0 = itemEl.querySelector('.u-speed');
   if (speedEl0) speedEl0.textContent = '计算校验值…';
   let localSha = null;
   try { localSha = await sha256Blob(file); } catch (_) { localSha = null; }
 
-  return new Promise((resolve, reject) => {
-    const xhr = new XMLHttpRequest();
-    // 原始 body，服务端边收边写，不整包进内存
-    // 文件夹上传时用 webkitRelativePath 保留层级（"选中的文件夹/子目录/文件"），普通文件退回 file.name
-    const relPath = file.webkitRelativePath || file.name;
-    const url = API + '/upload?dir=' + encodeURIComponent(currentPath)
-      + '&name=' + encodeURIComponent(relPath);
-    xhr.open('POST', url);
-    xhr.timeout = 0; // 不限制大文件
-    xhr.setRequestHeader('Content-Type', 'application/octet-stream');
-    xhr.setRequestHeader('X-File-Name', encodeURIComponent(relPath));
-    // 完整性：把期望大小和哈希交给服务端，收完逐字节校验，不一致丢弃临时文件
-    xhr.setRequestHeader('X-File-Size', String(file.size));
-    if (localSha) xhr.setRequestHeader('X-File-SHA256', localSha);
+  const relPath = file.webkitRelativePath || file.name;
+  // 稳定 id：优先用全文件 sha（同名同内容可得同一 id）；无 sha 时用 encode 后的 name|size 保 ASCII 安全
+  const fileId = localSha || encodeURIComponent(relPath + '|' + file.size);
+  const fillEl = itemEl.querySelector('.u-fill');
+  const statusEl = itemEl.querySelector('.u-status');
+  const speedEl = itemEl.querySelector('.u-speed');
+  const MAX_RETRY = 4;
 
-    let lastLoaded = 0;
-    let lastTs = performance.now();
-    let peak = 0;
+  for (let attempt = 1; attempt <= MAX_RETRY; attempt++) {
+    // 1) 查服务端：秒传 or 续传断点
+    let offset = 0;
+    try {
+      const q = API + '/upload-resume?dir=' + encodeURIComponent(currentPath)
+        + '&name=' + encodeURIComponent(relPath)
+        + '&size=' + file.size
+        + '&sha=' + encodeURIComponent(localSha || '')
+        + '&id=' + encodeURIComponent(fileId);
+      const r = await fetch(q, { cache: 'no-store' });
+      if (r.ok) {
+        const meta = await r.json();
+        if (meta.instant) {
+          fillEl.style.width = '100%';
+          statusEl.textContent = '✓';
+          speedEl.textContent = '⚡ 秒传（服务端已存在）· ' + fmtSize(file.size);
+          return { ok: true, instant: true, verified: 'instant', name: meta.name, size: file.size, sha256: localSha };
+        }
+        offset = Number(meta.offset) || 0;
+      }
+    } catch (_) {}
+    if (offset >= file.size) offset = 0; // 异常保护
 
-    xhr.upload.onprogress = (e) => {
-      if (!e.lengthComputable) return;
-      const now = performance.now();
-      const dt = (now - lastTs) / 1000;
-      let speed = 0;
-      if (dt > 0.15) {
-        speed = (e.loaded - lastLoaded) / dt;
-        lastLoaded = e.loaded;
-        lastTs = now;
-        if (speed > peak) peak = speed;
-      }
-      const pct = Math.min(100, Math.round(e.loaded / e.total * 100));
-      itemEl.querySelector('.u-fill').style.width = pct + '%';
-      itemEl.querySelector('.u-status').textContent = pct + '%';
-      const speedEl = itemEl.querySelector('.u-speed');
-      if (speedEl) {
-        speedEl.textContent = fmtSpeed(speed || peak) + ' · ' + fmtSize(e.loaded) + ' / ' + fmtSize(e.total);
-      }
-    };
+    // 2) 发送（从 offset 起的剩余分片；进度按整文件算）
+    try {
+      const d = await new Promise((resolve, reject) => {
+        const xhr = new XMLHttpRequest();
+        const url = API + '/upload?dir=' + encodeURIComponent(currentPath)
+          + '&name=' + encodeURIComponent(relPath);
+        xhr.open('POST', url);
+        xhr.timeout = 0;
+        xhr.setRequestHeader('Content-Type', 'application/octet-stream');
+        xhr.setRequestHeader('X-File-Name', encodeURIComponent(relPath));
+        xhr.setRequestHeader('X-File-Size', String(file.size)); // 期望整文件大小（服务端据此判定收齐）
+        xhr.setRequestHeader('X-File-Id', encodeURIComponent(fileId));
+        xhr.setRequestHeader('X-File-Offset', String(offset));
+        if (localSha) xhr.setRequestHeader('X-File-SHA256', localSha);
 
-    xhr.onload = () => {
-      if (xhr.status >= 200 && xhr.status < 300) {
-        try {
-          const d = JSON.parse(xhr.responseText || '{}');
-          if (d.ok === false) return reject(new Error(d.error || '上传失败'));
-          resolve(d);
-        } catch (_) { resolve({ ok: true }); }
-      } else {
-        let msg = 'HTTP ' + xhr.status;
-        try { msg = (JSON.parse(xhr.responseText) || {}).error || msg; } catch (_) {}
-        reject(new Error(msg));
-      }
-    };
-    xhr.onerror = () => reject(new Error('网络错误'));
-    xhr.ontimeout = () => reject(new Error('上传超时'));
-    xhr.onabort = () => reject(new Error('已取消'));
-    // 直接发送 File/Blob，浏览器按原始字节传输，不转码
-    xhr.send(file);
-  });
+        let lastLoaded = 0, lastTs = performance.now(), peak = 0;
+        xhr.upload.onprogress = (e) => {
+          if (!e.lengthComputable) return;
+          const now = performance.now();
+          const dt = (now - lastTs) / 1000;
+          let speed = 0;
+          if (dt > 0.15) {
+            speed = (e.loaded - lastLoaded) / dt;
+            lastLoaded = e.loaded; lastTs = now;
+            if (speed > peak) peak = speed;
+          }
+          const sent = offset + e.loaded;
+          const pct = Math.min(100, Math.round(sent / file.size * 100));
+          fillEl.style.width = pct + '%';
+          statusEl.textContent = pct + '%';
+          speedEl.textContent = fmtSpeed(speed || peak) + ' · ' + fmtSize(sent) + ' / ' + fmtSize(file.size)
+            + (offset > 0 ? '（续传自 ' + Math.round(offset / file.size * 100) + '%）' : '');
+        };
+
+        xhr.onload = () => {
+          if (xhr.status >= 200 && xhr.status < 300) {
+            try {
+              const d = JSON.parse(xhr.responseText || '{}');
+              if (d.ok === false) return reject(new Error(d.error || '上传失败'));
+              resolve(d);
+            } catch (_) { resolve({ ok: true }); }
+          } else {
+            let msg = 'HTTP ' + xhr.status;
+            try {
+              const j = JSON.parse(xhr.responseText) || {};
+              msg = j.error || msg;
+              if (j.resumeNeeded) { const e = new Error(msg); e.resumeNeeded = true; return reject(e); }
+            } catch (_) {}
+            reject(new Error(msg));
+          }
+        };
+        xhr.onerror = () => reject(new Error('网络中断'));
+        xhr.ontimeout = () => reject(new Error('上传超时'));
+        xhr.onabort = () => reject(new Error('已取消'));
+        // 只发缺失部分；offset=0 时整文件（File 是 Blob，浏览器流式读，不整包进内存）
+        xhr.send(offset > 0 ? file.slice(offset) : file);
+      });
+      return d; // 成功：d.resumed / d.resumedBytes 供 UI 显示
+    } catch (e) {
+      if (attempt >= MAX_RETRY) throw e;
+      speedEl.textContent = (e.resumeNeeded ? '断点已变，重查…' : '中断，' + (600 * attempt) + 'ms 后续传…');
+      await new Promise(r => setTimeout(r, 600 * attempt));
+    }
+  }
+  throw new Error('上传失败（已重试 ' + MAX_RETRY + ' 次）');
 }
 
 async function uploadFiles(fileList) {
@@ -1283,7 +1359,9 @@ async function uploadFiles(fileList) {
           job.item.querySelector('.u-fill').style.width = '100%';
           job.item.querySelector('.u-status').textContent = '✓';
           let badge = '';
-          if (d && d.verified === 'sha256') badge = ' · SHA-256 校验通过';
+          if (d && d.instant) badge = ' · ⚡秒传';
+          else if (d && d.resumed) badge = ' · 续传 ' + fmtSize(d.resumedBytes || 0) + ' 后完成';
+          else if (d && d.verified === 'sha256') badge = ' · SHA-256 校验通过';
           else if (d && d.verified === 'size') badge = ' · 大小校验通过';
           job.item.querySelector('.u-speed').textContent = '完成 · ' + fmtSize(job.file.size) + badge;
           okCount++;

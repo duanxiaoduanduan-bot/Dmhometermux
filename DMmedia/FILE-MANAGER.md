@@ -2,7 +2,7 @@
 
 端口默认 **8087**（`FILE_PORT` / `config.json` → `DMmedia.files`）。  
 页面：`file-manager.html`，服务：`file-manager.js`。  
-版本：**v2.3**（完整性校验：SHA-256 双端校验 + ZIP 打包下载）。
+版本：**v2.4**（断点续传 + 秒传 + PC 端续传命令；兼容 v2.3 的 SHA-256 校验 + ZIP 打包下载）。
 
 ## 访问
 
@@ -35,6 +35,43 @@
 | POST | `/api/storage/add` | body: `{ name?, path, type?: "storage" }` |
 | POST | `/api/storage/remove` | body: `{ path }` |
 | GET/POST | `/api/shortcuts` | 全部侧边栏入口（含 storage） |
+
+## 断点续传与秒传（v2.4）
+
+网络中断不再从头再来。上传和下载两条路都支持续传，思路不同：
+
+### 上传续传（浏览器 → 服务端）
+
+1. 前端上传前算好整文件 SHA-256，先调 `/api/upload-resume`：
+   - **秒传**：目标文件已存在且大小一致（有 sha 时再验哈希）→ 直接返回 `instant: true`，一个字节都不传
+   - 否则返回 `offset`（已缓存的分片字节数）
+2. 前端用 `X-File-Id`（= 文件 SHA-256，稳定标识）+ `X-File-Offset` 只发缺失部分（`file.slice(offset)`）
+3. 服务端把分片写成固定名 `.xxx.upload-part`，**中断保留、不删除**；收齐后对**整文件**流式重算 SHA-256，一致才原子改名
+4. 网络中断自动重试（最多 4 次），每次重连先重查断点，从服务端实际 offset 接着传
+5. 谎报 offset 会被拒（409 + `resumeNeeded`），前端重查后对齐，绝不会错位拼接
+
+> 分片路径只在本地隐藏，不在目录列表显示；超过 24 小时未完成的残留由服务端每小时自动清理。老客户端（不带 `X-File-Id`）回退到原「一次性上传 + 大小校验」，行为不变。
+
+### 下载续传（服务端 → PC）
+
+服务端 `/api/download` 原生支持 **HTTP Range（206 / `Accept-Ranges: bytes`）**，因此**用支持续传的下载工具即可断点续传**，浏览器端不做（手机 Web 存大文件的 OPFS/IndexedDB 方案不稳、易 OOM）。
+
+文件右键菜单 **「🔗 复制续传命令（PC）」** 会生成两种可直接粘贴的命令，中断后**重跑同一条**即从断点继续：
+
+```bash
+# curl（多数系统自带，-C - 自动续传）
+curl -L -C - -o "电影.mp4" "http://主机:8087/api/download?path=..."
+
+# aria2c（多线程更快，-c 续传；需安装 aria2）
+aria2c -c -x4 -s4 -o "电影.mp4" "http://主机:8087/api/download?path=..."
+```
+
+### 相关 API
+
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| GET | `/api/upload-resume?dir=&name=&size=&sha=&id=` | 秒传检测 + 断点偏移：`{ instant, offset, expectSize }` |
+| POST | `/api/upload` | 新增头 `X-File-Id`、`X-File-Offset` 实现分片续传；`X-File-Size` 为整文件大小 |
 
 ## 完整性校验与批量传输（v2.3）
 
@@ -123,7 +160,8 @@ multipart 仍兼容，但单次有大小上限提示；**推荐走流式上传**
 |------|------|------|
 | GET | `/api/list?path=` | 列目录 |
 | GET | `/api/download?path=` | 下载（支持 Range） |
-| POST | `/api/upload?dir=&name=` | 流式上传；头 `X-File-Name`、`X-File-Size`、`X-File-SHA256`（后两者用于完整性校验） |
+| POST | `/api/upload?dir=&name=` | 流式上传 + 断点续传；头 `X-File-Name`、`X-File-Size`、`X-File-SHA256`、`X-File-Id`、`X-File-Offset` |
+| GET | `/api/upload-resume?dir=&name=&size=&sha=&id=` | 秒传检测 + 续传断点 |
 | GET | `/api/hash?path=` | 单文件 SHA-256 + 大小 |
 | GET/POST | `/api/pack?paths=` | 批量打包 ZIP（内嵌 SHA-256 清单） |
 | DELETE | `/api/delete` | body: `{ paths: [] }` |
@@ -137,9 +175,9 @@ multipart 仍兼容，但单次有大小上限提示；**推荐走流式上传**
 ## 界面功能摘要
 
 - 列表 / 网格、排序、多选、**打包下载 / 校验下载** / 删除  
-- 拖拽上传、文件夹上传（**SHA-256 完整性校验**）  
+- 拖拽上传、文件夹上传（**SHA-256 校验 + 断点续传 + 秒传**）  
 - 侧边栏快捷目录 + 媒体库 + 外接设备  
-- 右键：下载 / 重命名 / 复制路径 / 删除  
+- 右键：下载 / **复制续传命令（PC）** / 重命名 / 复制路径 / 删除  
 
 ## 性能预期（局域网）
 
