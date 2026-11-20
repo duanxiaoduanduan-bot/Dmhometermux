@@ -43,13 +43,26 @@ ssh -N -L 18084:127.0.0.1:8084 arm   # 然后本机访问 http://127.0.0.1:18084
 
 ---
 
-## 4. 设备锁屏后所有端口 refused / 连不上
+## 4. 设备锁屏后所有端口 refused / 连不上 / SSH 连不上
 
 **现象**：能 ping 通但所有端口 refused，或 SSH 连不上。
 
-**根因**：Android 锁屏会冻结 termux 后台（包括 sshd 和 dm-* 服务进程）。
+**根因 A（锁屏回收）**：Android 锁屏会冻结 termux 后台（包括 sshd 和 dm-* 服务进程）。
 
-**对策**：点亮设备 → 打开 termux 跑 `termux-wake-lock`（申请唤醒锁）；sshd 被回收则 `pkill sshd; sshd`。长期建议保持 termux 前台/加白名单。
+**对策 A**：点亮设备 → 打开 termux 跑 `termux-wake-lock`（申请唤醒锁）；sshd 被回收则 `pkill sshd; sshd`。长期建议保持 termux 前台/加白名单。
+
+**根因 B（重启后 sshd 不自启，2026-11-20 新机踩到）**：sshd 服务目录里有 `down` 文件（`$PREFIX/var/service/sshd/down`）——runit 语义 = **默认禁用自启**；且当时那条 sshd 是手动起的孤儿进程（PPID=1），设备重启后自然没了。DM 各服务不受影响（安装脚本会 `sv-enable`），唯独 sshd 要单独确认。
+
+**对策 B**（一次修好，以后重启自动起）：
+
+```bash
+rm -f $PREFIX/var/service/sshd/down
+pkill -f '^sshd' 2>/dev/null; sleep 2
+SVDIR=$PREFIX/var/service $PREFIX/bin/sv restart sshd
+SVDIR=$PREFIX/var/service $PREFIX/bin/sv status sshd   # 应为 run，PPID=runsv 而非 1
+```
+
+> 相关：打开 Termux 不显示服务地址横幅，是全新设备 `~/.bashrc` 为空所致——配 banner 见 [ARCHITECTURE §9](ARCHITECTURE.md)。
 
 ---
 

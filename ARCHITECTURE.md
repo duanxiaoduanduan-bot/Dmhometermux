@@ -187,7 +187,32 @@ DMcore 控制台（8088）的 `/api/projects` 用「独立 supervisord 实例」
 - **`pm2 resurrect`**：PM2 守护进程在跑但 `dump.pm2` 早丢 → 每次登录刷 `[PM2][ERROR]` + 空进程表 + `host metrics` 行。已移除并 `pm2 kill` 停守护进程。
 - **「DMpage 开机自启」块**：`pkill node` + `nohup` 起游离实例，会与 runit 双管理、造孤儿进程；且引用的 `download/DMpageo` 目录已不存在（死代码）。已删除。
 
-> **铁律：DM 服务只用 runit 托管，严禁 pm2 / nohup 自启。** 登录 banner 端口见 README 端口表。
+**新机 banner 配置**（2026-11-20）：全新设备 `~/.bashrc` 是空的，打开 Termux 不会显示任何地址。装完 DM 后需手动配一次（幂等，可重复执行）：
+
+```bash
+cat > $HOME/dm-banner.sh <<'EOF'
+IP=$(ifconfig wlan0 2>/dev/null | awk '$1=="inet"{print $2}' | head -1)
+[ -z "$IP" ] && IP="<未获取到IP>"
+echo ""
+echo "============================================"
+echo "  DM 全家服务  |  http://$IP"
+echo "============================================"
+echo "  DMChat   http://$IP:8083   https://$IP:8443"
+echo "  DMgeo    http://$IP:8084"
+echo "  DMmedia  http://$IP:8081   文件 http://$IP:8087"
+echo "  DMpageo  http://$IP:8085"
+echo "  DMshow   http://$IP:8086"
+echo "  DMcore   http://$IP:8088"
+echo "============================================"
+echo ""
+EOF
+chmod +x $HOME/dm-banner.sh
+grep -q 'dm-banner.sh' $HOME/.bashrc 2>/dev/null || echo '[ -f "$HOME/dm-banner.sh" ] && bash "$HOME/dm-banner.sh"' >> $HOME/.bashrc
+```
+
+> 取 IP 用 `ifconfig wlan0`：**termux 没有 `ip` 命令，`hostname -I` 也不支持**。IP 动态读取，DHCP 漂了也准；端口表见 [README](README.md)。
+
+> **铁律：DM 服务只用 runit 托管，严禁 pm2 / nohup 自启。**
 
 ---
 
@@ -219,4 +244,29 @@ DMgeo 的地图编辑在 `map-player.html`、大数据展示屏在 `dashboard.ht
 - 点要素 → `MultiPoint`；线要素 → `MultiLineString`；均含 `properties.name`（未命名则为空串）。
 - 路径总览的站点名匹配、统计口径均依赖此格式；坐标键统一用 `lat.toFixed(5)+','+lon.toFixed(5)`。
 - 命名功能已端到端验证：写入带自定义中文名的线 → 读回 `name` 一致 → 删除清理无残留（`/save-geodata` 的 `deleted:[clientId]` 精确删）。
+
+---
+
+## 12. DMmedia 转播融合（多机媒体联合）
+
+把多台 DM 服务器的媒体目录**逻辑合并**成一张列表——不复制文件、不建中心节点，任何一台下线其余照常。用户操作（入口/添加/移除/为什么没有扫描按钮）见 [README「DMmedia 转播融合」](README.md)，改动清单见 [CHANGELOG 第 11 节](CHANGELOG.md)。
+
+**① 身份**：每台机器首次启动生成唯一 `serverId`（UUID，持久化在 `DMmedia/storage-config.json`）。在 🛰️ 转播页填对方地址添加时，本机先 GET 对方 `/api/hello` 验证身份、拿到它的 `serverId` 才登记进 `remotes`——**显式信任，陌生服务器进不来**。管理接口 `/api/remotes`（CRUD）+ `/api/remotes/reconnect`（一键重连），管理页 `DMmedia/remotes.html`。
+
+**② 列表联邦聚合**：7 个 `*-list.json` 接口改为异步聚合「本机 + 各 remote 的同名列表」。`fetchRemoteJson` 超时/失败静默返回 `null`，合并时跳过 → **对方关机自动只剩本机**。核心是 `mergeByList()` 里的**路径改写**：远端条目的文件路径改成 `remote/<id>/原路径`，带来两个结果：
+
+1. **前端零改动**：6 个播放器照常读 list、照常用相对路径加载文件，远端条目看起来和本机一样，只是多个前缀；远端内容天然可搜。
+2. **反代取文件**：播放时命中 `/remote/<id>/` 反向代理（`proxyToRemote`），**透传 HTTP Range** 支持视频拖动进度。
+
+**③ UDP 自动发现（只修 IP，不加人）**：`DISCOVERY_PORT=18081`，每台机器每 20s 广播自己的 `serverId + IP`。收到心跳后的关键约束：
+
+```
+收到心跳 → serverId 是「已握手登记」的 remote？
+        → 是且 IP 变了：自动更新它的 URL ✅
+        → 不是：忽略，绝不自动添加 ❌
+```
+
+这解决了家庭 DHCP 变 IP 的痛点，同时守住安全边界（新设备仍需手动握手）。Android 上 UDP 广播受限有完整 try/catch 保护，不会崩。
+
+> 一句话：**serverId 做身份 → 握手登记信任 → 列表实时联邦聚合（离线静默降级）→ 路径改写让前端零改动 → 反代 + Range 让远端文件像本地播 → UDP 心跳兜住 IP 漂移。**
 

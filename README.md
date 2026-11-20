@@ -7,7 +7,7 @@
 
 | 文档 | 内容 |
 |------|------|
-| **[ARCHITECTURE.md](ARCHITECTURE.md)** | **各部分设计逻辑**（部署架构、数据库三库、统计口径、前端切库、服务托管、DMcore 适配、登录 shell） |
+| **[ARCHITECTURE.md](ARCHITECTURE.md)** | **各部分设计逻辑**（部署架构、数据库三库、统计口径、前端切库、服务托管、DMcore 适配、登录 shell+banner、DMmedia 转播融合） |
 | **[TROUBLESHOOTING.md](TROUBLESHOOTING.md)** | **易错点 / 排坑清单**（孤儿进程、端口冲突、串库、重置 PG、休眠、PM2 残留…） |
 | **[CHANGELOG.md](CHANGELOG.md)** | 近期全部改动总览（DMshow / 网盘 / 安装 / 代理） |
 | [install/README.md](install/README.md) | 分阶段安装（**先装 DM**） |
@@ -102,12 +102,29 @@ bash termux.sh                        # 全自动：装依赖 → 复用/克隆�
 ## 子服务一览
 
 - **DMcore** — 进程/项目管理 + 统一反向代理（8080 入口 / 8088 控制台）
-- **DMmedia** — 媒体播放 + **网盘**（`:8087`，双进程 server.js + file-manager.js）；播放器（电视剧/MV/音乐）支持按名称/演唱者搜索、localStorage 续播（重新打开自动定位上次进度，不自动播放）
+- **DMmedia** — 媒体播放 + **网盘**（`:8087`，双进程 server.js + file-manager.js）；**6 个播放器**（电视剧/MV/音乐/相册/书籍/音频）均支持按名称搜索、localStorage 续播（打开自动定位上次进度，不自动播放）；支持**多机转播融合**（见下）
 - **DMgeo** — 地图 / PostGIS
-- **DMpageo** — 合并门户（iframe 聚合 DMmedia + DMgeo）
-- **DMChat** — WebSocket 聊天（注册制）
+- **DMpageo** — 合并门户（顶部 6 tab：媒体 8081 / 聊天 8083 / 地理 8084 / 主页 8086 / 网盘 8087 / 控制台 8088，iframe 聚合）
+- **DMChat** — WebSocket 聊天（注册制）；聊天记录按月落盘（`chatlogs/YYYY-MM/`），📜「记录」面板可查日期/明细/导出 TXT，入群自动加载当日历史
 - **DMshow** — **作品集**（`library/` 自动排版）
 - **dm-postgis** — 原生 PostgreSQL 18 / PostGIS 3.6（端口 5432）
+
+## DMmedia 转播融合（多机媒体联合）
+
+把另一台 DM 服务器的媒体目录合并进来统一展示——**不搬文件、不建中心节点**，任何一台关机其余照常。
+
+**入口**：`http://<设备IP>:8081` 首页顶部工具栏「🛰️ 转播」按钮 → `remotes.html` 管理页。
+
+| 操作 | 做法 |
+|------|------|
+| 添加设备 | 在「添加转播服务器」填对方地址（如 `http://192.168.1.x:8081`）+ 备注名 → 点「握手」（先验证对方 `/api/hello` 拿到 `serverId` 才登记，显式信任） |
+| 移除设备 | 「已配转播服务器」列表里点该台右侧 **✕** |
+| 一键重连 | 管理页顶部「🔄 一键重连」 |
+| 在线状态 | 列表直接显示在线/离线；对方关机自动只剩本机目录 |
+
+> **没有「自动扫描附近设备」按钮**——添加靠手动输地址 + 握手。后台 UDP 18081 心跳只做一件事：已握手设备 DHCP 变 IP 时自动修正地址，**绝不会自动添加陌生服务器**（当初拍板的安全边界）。
+
+合并后远端条目与本机条目长得一样（路径改写为 `remote/<id>/原路径`），6 个播放器零改动照常读列表、照常播，**远端内容天然可搜**。机制细节见 [ARCHITECTURE §12](ARCHITECTURE.md)。
 
 ## DMChat 账号（注册制）
 
