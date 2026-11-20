@@ -2,7 +2,7 @@
 
 端口默认 **8087**（`FILE_PORT` / `config.json` → `DMmedia.files`）。  
 页面：`file-manager.html`，服务：`file-manager.js`。  
-版本：**v2.4**（断点续传 + 秒传 + PC 端续传命令；兼容 v2.3 的 SHA-256 校验 + ZIP 打包下载）。
+版本：**v2.5**（全网联邦视图：跨设备浏览/勾选下载；兼容 v2.4 断点续传 + 秒传、v2.3 完整性校验）。
 
 ## 访问
 
@@ -35,6 +35,32 @@
 | POST | `/api/storage/add` | body: `{ name?, path, type?: "storage" }` |
 | POST | `/api/storage/remove` | body: `{ path }` |
 | GET/POST | `/api/shortcuts` | 全部侧边栏入口（含 storage） |
+
+## 全网联邦视图（v2.5）
+
+顶栏 **「🌐 全网」** 把所有已握手设备的文件聚合到一个视图，解决"下载还得挨个设备找"的问题。**设备来源就是转播融合（8081）的 `remotes`**——同一份 `storage-config.json`，在 🛰️ 转播页握手添加的设备自动出现在全网视图，离线设备置灰跳过。
+
+### 怎么用
+
+1. 先在 `http://<IP>:8081` 首页 **🛰️ 转播** 页握手添加设备（见 README「转播融合」）
+2. 网盘顶栏点 **「🌐 全网」** → 左侧列出所有设备（在线绿点/离线灰点）
+3. 点某设备 → 浏览它的目录（可进子目录）；勾选想要的文件
+4. **⬇️ 校验下载**：跨设备逐个下载，自带 SHA-256 校验 + 断点续传；**📦 打包下载**：按设备分组各打一个 ZIP（带清单）
+
+### 机制
+
+- **设备发现** `/api/global/devices`：读 remotes + 探测各设备网盘 `/api/info` 在线状态；握手后即时生效，无需重启。
+- **通用反代** `/api/global/proxy?device=&api=&...`：本机走 `127.0.0.1:8087`、远端走其网盘；透传 Range/Content-* → 远端下载/续传像本地。**只认登记过的设备 id，不接受任意 URL（防 SSRF）**。
+- **远端端口**：默认与本机相同（全家 8087）；非常规端口在 remote 项加 `"filePort": 8089` 或 `"fileBase": "http://ip:8089"`。
+- **前端路径编码**：全网文件 `path` = `dev:<设备id>:<真实路径>`，下载/校验/打包自动识别该前缀走 global proxy；本机视图无前缀、行为不变。
+- 与媒体联邦是**同一套信任（remotes）、两层聚合**：8081 聚合播放列表，8087 聚合文件目录；都不搬文件、不建中心节点。
+
+### 相关 API
+
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| GET | `/api/global/devices` | 设备列表 + 在线状态 `{ devices:[{id,name,local,online,base}] }` |
+| GET | `/api/global/proxy?device=&api=&...` | 通用反代；`api` = `/list` `/download` `/hash` `/pack` `/info` 等，其余参数原样透传 |
 
 ## 断点续传与秒传（v2.4）
 
@@ -162,6 +188,8 @@ multipart 仍兼容，但单次有大小上限提示；**推荐走流式上传**
 | GET | `/api/download?path=` | 下载（支持 Range） |
 | POST | `/api/upload?dir=&name=` | 流式上传 + 断点续传；头 `X-File-Name`、`X-File-Size`、`X-File-SHA256`、`X-File-Id`、`X-File-Offset` |
 | GET | `/api/upload-resume?dir=&name=&size=&sha=&id=` | 秒传检测 + 续传断点 |
+| GET | `/api/global/devices` | 全网设备列表 + 在线状态 |
+| GET | `/api/global/proxy?device=&api=&...` | 跨设备通用反代（list/download/hash/pack/info） |
 | GET | `/api/hash?path=` | 单文件 SHA-256 + 大小 |
 | GET/POST | `/api/pack?paths=` | 批量打包 ZIP（内嵌 SHA-256 清单） |
 | DELETE | `/api/delete` | body: `{ paths: [] }` |
@@ -175,6 +203,7 @@ multipart 仍兼容，但单次有大小上限提示；**推荐走流式上传**
 ## 界面功能摘要
 
 - 列表 / 网格、排序、多选、**打包下载 / 校验下载** / 删除  
+- **🌐 全网视图**：聚合所有握手设备的文件，跨设备勾选下载  
 - 拖拽上传、文件夹上传（**SHA-256 校验 + 断点续传 + 秒传**）  
 - 侧边栏快捷目录 + 媒体库 + 外接设备  
 - 右键：下载 / **复制续传命令（PC）** / 重命名 / 复制路径 / 删除  

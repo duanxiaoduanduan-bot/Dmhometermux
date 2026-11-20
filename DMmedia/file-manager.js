@@ -390,6 +390,53 @@ function hashFile(fp) {
     rs.on('end', () => resolve(h.digest('hex')));
   });
 }
+// ===== 联邦网盘（复用 DMmedia 的 remotes 配置）=====
+// 从同目录 storage-config.json 读 serverId / remotes（8081 与 8087 共享同一份配置）
+function loadFederation() {
+  let cfg = {};
+  try { cfg = JSON.parse(fs.readFileSync(path.join(PAGE_DIR, 'storage-config.json'), 'utf8')); } catch (_) {}
+  return {
+    serverId: cfg.serverId || '',
+    remotes: Array.isArray(cfg.remotes) ? cfg.remotes : [],
+    siteName: cfg.siteName || '',
+  };
+}
+// remote.url 指向对方 8081（DMmedia 主服务），网盘默认同端口（全家对称部署 8087）。
+// 可用 remote.fileBase / remote.filePort 显式覆盖（双实例模拟或非常规端口时用）。
+function remoteFileBase(remote) {
+  if (remote.fileBase) return String(remote.fileBase).replace(/\/+$/, '');
+  try {
+    const u = new URL(remote.url);
+    const port = remote.filePort ? String(remote.filePort) : String(PORT);
+    u.port = port;
+    u.pathname = ''; u.search = ''; u.hash = '';
+    return u.toString().replace(/\/+$/, '');
+  } catch (_) {
+    return String(remote.url || '').replace(/\/+$/, '');
+  }
+}
+// 设备解析：self=本机；否则按 id 在 remotes 里找（只认已登记设备，防 SSRF）
+function resolveDevice(id) {
+  const fed = loadFederation();
+  if (!id || id === 'self' || id === fed.serverId) {
+    return { id: 'self', name: fed.siteName || '本机', base: 'http://127.0.0.1:' + PORT, local: true };
+  }
+  const r = fed.remotes.find(x => x && x.id === id);
+  if (!r || !r.url) return null;
+  return { id: r.id, name: r.name || r.id, base: remoteFileBase(r), url: r.url, local: false };
+}
+// 探测远端网盘是否在线（GET /api/info，短超时）
+function probeDevice(base, timeoutMs) {
+  const t = timeoutMs || 2500;
+  return new Promise((resolve) => {
+    let req;
+    try { req = http.get(base + '/api/info', { timeout: t }, (res) => { res.resume(); resolve(res.statusCode === 200); }); }
+    catch (_) { return resolve(false); }
+    req.on('timeout', () => { req.destroy(); resolve(false); });
+    req.on('error', () => resolve(false));
+  });
+}
+
 // 定时清理超过 24 小时未完成的上传分片（前端中途放弃的残留）
 function cleanupStaleParts() {
   let cleaned = 0;
@@ -1284,6 +1331,66 @@ const server = http.createServer((req, res) => {
         .catch(sendResume);
     }
     sendResume();
+    return;
+  }
+
+  // === API: 联邦设备列表（本机 + 已登记 remote，带在线状态）===
+  if (reqPath === '/api/global/devices' && method === 'GET') {
+    const fed = loadFederation();
+    const devices = [{ id: 'self', name: fed.siteName || '本机', local: true, online: true, serverId: fed.serverId }];
+    const remotes = fed.remotes.filter(r => r && r.url).map(r => ({
+      id: r.id, name: r.name || r.id, local: false, url: r.url, base: remoteFileBase(r), online: false,
+    }));
+    res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' });
+    if (!remotes.length) return res.end(JSON.stringify({ devices, selfId: fed.serverId }));
+    return Promise.all(remotes.map(r => probeDevice(r.base)))
+      .then(states => {
+        remotes.forEach((r, i) => { r.online = states[i]; });
+        res.end(JSON.stringify({ devices: devices.concat(remotes), selfId: fed.serverId }));
+      })
+      .catch(() => res.end(JSON.stringify({ devices, selfId: fed.serverId })));
+  }
+
+  // === API: 联邦通用反代（list / download / hash / pack 等，透传 Range）===
+  // 前端用 /api/global/proxy?device=<id>&api=<原生端点>&<原端点参数>
+  // device=self 走 127.0.0.1 复用本机逻辑；否则按设备 id 找到已登记 remote 反代。
+  if (reqPath === '/api/global/proxy' && method === 'GET') {
+    const deviceId = url.searchParams.get('device');
+    const api = url.searchParams.get('api'); // 例如 '/list' '/download' '/hash' '/pack'
+    const dev = resolveDevice(deviceId);
+    if (!dev) {
+      res.writeHead(404, { 'Content-Type': 'application/json; charset=utf-8' });
+      return res.end(JSON.stringify({ error: '设备不存在或未登记' }));
+    }
+    if (!api || !/^\/[a-z-]+$/.test(api)) {
+      res.writeHead(400, { 'Content-Type': 'application/json; charset=utf-8' });
+      return res.end(JSON.stringify({ error: '缺少或不合法的 api 参数' }));
+    }
+    // 重建目标 query：去掉 device/api，其余原样透传
+    const q = new URLSearchParams(url.searchParams);
+    q.delete('device'); q.delete('api');
+    const qs = q.toString();
+    const target = dev.base + '/api' + api + (qs ? '?' + qs : '');
+    // 透传 Range / If-Range（断点续传必需）
+    const headers = {};
+    if (req.headers.range) headers['Range'] = req.headers.range;
+    if (req.headers['if-range']) headers['If-Range'] = req.headers['if-range'];
+    let upstream;
+    try { upstream = http.get(target, { headers, timeout: 30000 }, (up) => {
+      const outHeaders = {};
+      // 只透传必要头，避免 hop-by-hop
+      ['content-type','content-length','content-range','accept-ranges','content-disposition','cache-control','last-modified','etag'].forEach(h => {
+        if (up.headers[h]) outHeaders[h] = up.headers[h];
+      });
+      outHeaders['X-Global-Device'] = encodeURIComponent(dev.name);
+      res.writeHead(up.statusCode || 200, outHeaders);
+      up.pipe(res);
+    }); } catch (_) {
+      res.writeHead(502, { 'Content-Type': 'application/json; charset=utf-8' });
+      return res.end(JSON.stringify({ error: '设备不可达' }));
+    }
+    upstream.on('timeout', () => { upstream.destroy(); if (!res.headersSent) { res.writeHead(504); res.end('设备响应超时'); } });
+    upstream.on('error', () => { if (!res.headersSent) { res.writeHead(502); res.end('设备连接失败'); } });
     return;
   }
 

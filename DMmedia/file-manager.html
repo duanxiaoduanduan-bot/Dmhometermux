@@ -275,7 +275,43 @@ body {
   .file-date, .file-size { display: none; }
   .grid-card { width: 100px; }
   .upload-panel { width: calc(100vw - 24px); right: 12px; bottom: 12px; }
+  .global-devices { flex-direction: column; }
+  .global-layout { flex-direction: column; }
+  .global-sidebar { width: 100%; max-height: 200px; border-right: none; border-bottom: 1px solid var(--border); }
 }
+
+/* ===== 全网视图（联邦网盘）===== */
+.global-view { display: none; position: fixed; inset: 0; z-index: 110; background: var(--bg); flex-direction: column; }
+.global-view.show { display: flex; }
+.global-head { display: flex; align-items: center; gap: 12px; padding: 14px 20px; border-bottom: 1px solid var(--border); flex-shrink: 0; }
+.global-head h2 { font-size: 16px; font-weight: 600; }
+.global-head .spacer { flex: 1; }
+.global-layout { display: flex; flex: 1; overflow: hidden; }
+.global-sidebar { width: 230px; flex-shrink: 0; border-right: 1px solid var(--border); padding: 12px; overflow-y: auto; background: var(--surface); }
+.global-sidebar .label { font-size: 11px; color: var(--text3); padding: 4px 8px 8px; text-transform: uppercase; letter-spacing: .5px; }
+.dev-card { display: flex; align-items: center; gap: 10px; padding: 10px 12px; border-radius: var(--radius-sm); cursor: pointer; margin-bottom: 6px; border: 1px solid transparent; }
+.dev-card:hover { background: var(--surface2); }
+.dev-card.active { background: var(--blue-bg); border-color: var(--blue-border); }
+.dev-card .dot { width: 9px; height: 9px; border-radius: 50%; flex-shrink: 0; }
+.dev-card .dot.on { background: var(--green); }
+.dev-card .dot.off { background: var(--text3); }
+.dev-card .dev-name { font-size: 13px; font-weight: 500; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dev-card .dev-tag { font-size: 10px; color: var(--text3); }
+.global-main { flex: 1; display: flex; flex-direction: column; overflow: hidden; min-width: 0; }
+.global-bar { display: flex; align-items: center; gap: 10px; padding: 10px 16px; border-bottom: 1px solid var(--border); flex-shrink: 0; flex-wrap: wrap; }
+.global-bar .count { font-size: 13px; color: var(--blue); font-weight: 600; }
+.global-path { font-size: 12px; color: var(--text3); flex: 1; min-width: 120px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.global-list { flex: 1; overflow-y: auto; padding: 8px 16px; }
+.gfile { display: flex; align-items: center; gap: 12px; padding: 9px 8px; border-radius: var(--radius-sm); cursor: pointer; font-size: 13px; }
+.gfile:hover { background: var(--surface2); }
+.gfile.selected { background: var(--blue-bg); }
+.gfile .checkbox { width: 16px; height: 16px; flex-shrink: 0; border: 1px solid var(--text3); border-radius: 4px; position: relative; }
+.gfile.selected .checkbox { background: var(--blue); border-color: var(--blue); }
+.gfile.selected .checkbox::after { content: '✓'; position: absolute; color: #fff; font-size: 12px; left: 2px; top: -1px; }
+.gfile .gicon { font-size: 18px; width: 22px; text-align: center; }
+.gfile .gname { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.gfile .gsize { color: var(--text3); font-size: 12px; }
+.gempty { padding: 40px 20px; text-align: center; color: var(--text3); }
 </style>
 </head>
 <body>
@@ -292,7 +328,7 @@ body {
     <div class="sidebar-foot">
       <button class="btn btn-outline" style="width:100%;font-size:11px;margin-bottom:6px;justify-content:center" type="button" onclick="showStorageManager()" title="添加 U 盘 / 盘符 / 自定义目录">💾 添加存储</button>
       <button class="btn btn-ghost" style="width:100%;font-size:10px;padding:4px;color:var(--text3)" type="button" onclick="refreshMounts()" title="检测新插入的U盘/硬盘">🔄 检测外接设备</button>
-      <div style="margin-top:4px">网盘 v2.3 · 完整性校验</div>
+      <div style="margin-top:4px">网盘 v2.4 · 续传 + 全网联邦</div>
     </div>
   </aside>
 
@@ -306,6 +342,7 @@ body {
       <button class="btn btn-outline" type="button" onclick="triggerFolderUpload()" title="上传整个文件夹">📁 文件夹</button>
       <button class="btn btn-outline" type="button" onclick="showMkdir()">📂 新建文件夹</button>
       <button class="btn btn-outline" type="button" onclick="showStorageManager()" title="新增 U 盘 / 盘符 / 挂载目录">💾 存储</button>
+      <button class="btn btn-outline" type="button" onclick="openGlobalView()" title="聚合所有联网设备的文件，勾选后跨设备下载">🌐 全网</button>
     </div>
 
     <!-- 批量操作栏 -->
@@ -361,6 +398,35 @@ body {
     <button class="btn btn-ghost" style="padding:2px 6px;font-size:16px" onclick="toggleUploadPanel()">✕</button>
   </div>
   <div class="list" id="uploadList"></div>
+</div>
+
+<!-- 全网视图（联邦网盘） -->
+<div class="global-view" id="globalView">
+  <div class="global-head">
+    <h2>🌐 全网文件</h2>
+    <span style="font-size:12px;color:var(--text3)">聚合所有联网设备 · 跨设备勾选下载</span>
+    <span class="spacer"></span>
+    <button class="btn btn-ghost" onclick="closeGlobalView()">✕ 返回本机</button>
+  </div>
+  <div class="global-layout">
+    <div class="global-sidebar">
+      <div class="label">联网设备</div>
+      <div id="globalDevices"></div>
+      <div style="font-size:11px;color:var(--text3);padding:10px 8px;line-height:1.6;margin-top:8px;border-top:1px solid var(--border)">
+        设备在 🛰️ 转播页握手添加。<br>离线设备自动跳过。
+      </div>
+    </div>
+    <div class="global-main">
+      <div class="global-bar">
+        <span class="count" id="gCount">已选 0 项</span>
+        <button class="btn btn-primary" onclick="gBatchZip()">📦 打包下载</button>
+        <button class="btn btn-outline" onclick="gBatchDownload()">⬇️ 校验下载</button>
+        <span class="global-path" id="gPath"></span>
+        <button class="btn btn-ghost" onclick="gLoadDir(gCurDevice, gCurPath)">🔄 刷新</button>
+      </div>
+      <div class="global-list" id="globalList"></div>
+    </div>
+  </div>
 </div>
 
 <!-- 右键菜单 -->
@@ -913,29 +979,56 @@ function saveBlob(blob, name) {
 }
 
 // 原生下载（不校验，供打包 ZIP 等使用；服务端提供 filename*=UTF-8'' 防乱码）
+// ===== 联邦路径编码 =====
+// 全网视图里的文件用 "dev:<deviceId>:<真实路径>" 编码，下载/校验时解析成 global proxy URL。
+// 单设备视图路径不含该前缀，行为完全不变。
+function splitDevPath(fp) {
+  const s = String(fp);
+  if (s.startsWith('dev:')) {
+    const i = s.indexOf(':', 4);
+    if (i > 4) return { device: s.slice(4, i), path: s.slice(i + 1) };
+  }
+  return { device: null, path: s };
+}
+// 生成某个 API 端点的完整 URL（支持联邦设备前缀）
+function globalApiUrl(endpoint, fp) {
+  const { device, path } = splitDevPath(fp);
+  if (device) {
+    return API + '/global/proxy?device=' + encodeURIComponent(device)
+      + '&api=' + encodeURIComponent(endpoint)
+      + '&path=' + encodeURIComponent(path);
+  }
+  return API + endpoint + '?path=' + encodeURIComponent(path);
+}
+// 取联邦文件的显示名（去掉前缀取末段）
+function displayName(fp) {
+  const { path } = splitDevPath(fp);
+  return String(path).replace(/\\/g, '/').split('/').pop() || 'download';
+}
+
 function downloadFile(fp) {
-  const name = String(fp).replace(/\\/g, '/').split('/').pop() || 'download';
+  const name = displayName(fp);
   const a = document.createElement('a');
-  a.href = API + '/download?path=' + encodeURIComponent(fp);
+  a.href = globalApiUrl('/download', fp);
   a.download = name; a.rel = 'noopener';
   document.body.appendChild(a); a.click(); a.remove();
 }
 
 // 单个文件：流式下载 → 算 SHA-256 → 与服务端比对 → 一致才落盘；失败自动重试
 async function verifiedDownload(fp, itemEl, verifyEl, shaEl) {
-  const name = String(fp).replace(/\\/g, '/').split('/').pop() || 'download';
+  const name = displayName(fp);
   const MAX_RETRY = 3;
   for (let attempt = 1; attempt <= MAX_RETRY; attempt++) {
     try {
       if (verifyEl) verifyEl.textContent = attempt > 1 ? `重试 ${attempt}/${MAX_RETRY}` : '获取校验值…';
-      // 1) 先取服务端期望的 sha256 + size
-      const hRes = await fetch(API + '/hash?path=' + encodeURIComponent(fp));
+      // 1) 先取服务端期望的 sha256 + size（联邦设备自动走 global proxy）
+      const hRes = await fetch(globalApiUrl('/hash', fp));
       if (!hRes.ok) throw new Error('无法获取校验值 (HTTP ' + hRes.status + ')');
       const meta = await hRes.json();
       if (verifyEl) verifyEl.textContent = '下载中…';
 
       // 2) 流式下载到内存 Blob，同时显示进度
-      const dRes = await fetch(API + '/download?path=' + encodeURIComponent(fp));
+      const dRes = await fetch(globalApiUrl('/download', fp));
       if (!dRes.ok) throw new Error('下载失败 (HTTP ' + dRes.status + ')');
       const total = Number(dRes.headers.get('Content-Length')) || meta.size || 0;
       const reader = dRes.body.getReader();
@@ -1011,15 +1104,30 @@ async function batchDownload() {
 }
 
 // 批量「打包下载」：一次请求生成 ZIP（自带 CRC32 + __MANIFEST.json 的 SHA-256 清单）
+// 联邦文件按设备分组打包（不同设备的文件不能混在一个 ZIP 里，因为 pack 在各自设备执行）
 function batchDownloadZip() {
   const paths = [...selected];
   if (paths.length === 0) { toast('请选择文件或文件夹', 'error'); return; }
+  const groups = new Map(); // device -> [真实路径]
+  for (const fp of paths) {
+    const { device, path } = splitDevPath(fp);
+    const key = device || 'self';
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(path);
+  }
   toast('正在打包 ' + paths.length + ' 项（含 SHA-256 清单）…', 'success');
-  const a = document.createElement('a');
-  a.href = API + '/pack?paths=' + encodeURIComponent(JSON.stringify(paths));
-  a.download = 'DM打包_' + new Date().toISOString().slice(0,10) + '.zip';
-  a.rel = 'noopener';
-  document.body.appendChild(a); a.click(); a.remove();
+  let i = 0;
+  for (const [device, realPaths] of groups) {
+    const url = device === 'self'
+      ? API + '/pack?paths=' + encodeURIComponent(JSON.stringify(realPaths))
+      : API + '/global/proxy?device=' + encodeURIComponent(device) + '&api=' + encodeURIComponent('/pack')
+        + '&paths=' + encodeURIComponent(JSON.stringify(realPaths));
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = (device === 'self' ? 'DM打包' : device) + '_' + new Date().toISOString().slice(0,10) + (groups.size > 1 ? '_' + (++i) : '') + '.zip';
+    a.rel = 'noopener';
+    document.body.appendChild(a); a.click(); a.remove();
+  }
 }
 
 async function batchDelete() {
@@ -1201,6 +1309,161 @@ function copyResumeCmd(fp, name) {
   document.getElementById('copyAriaBtn').addEventListener('click', () => copy('resumeAria', 'aria2c 命令'));
 }
 
+// ===== 全网视图（联邦网盘）=====
+let gDevices = [];          // 设备列表
+let gCurDevice = 'self';    // 当前查看的设备 id
+let gCurPath = '/';         // 当前设备内的目录（远端真实路径）
+let gItems = [];            // 当前目录条目（path 为 dev: 编码，供下载引擎识别）
+let gSelected = new Set();  // 全网视图勾选（存 dev: 编码路径）
+
+async function openGlobalView() {
+  document.getElementById('globalView').classList.add('show');
+  gSelected.clear();
+  await gLoadDevices();
+  // 默认选中本机
+  const self = gDevices.find(d => d.local) || gDevices[0];
+  if (self) await gSelectDevice(self.id);
+}
+
+function closeGlobalView() {
+  document.getElementById('globalView').classList.remove('show');
+  hideModal();
+}
+
+async function gLoadDevices() {
+  const box = document.getElementById('globalDevices');
+  box.innerHTML = '<div style="padding:8px;color:var(--text3);font-size:12px">探测设备中…</div>';
+  try {
+    const res = await fetch(API + '/global/devices');
+    const data = await res.json();
+    gDevices = data.devices || [];
+  } catch (e) {
+    gDevices = [];
+    box.innerHTML = '<div style="padding:8px;color:var(--red);font-size:12px">设备列表加载失败</div>';
+    return;
+  }
+  box.innerHTML = gDevices.map(d => `
+    <div class="dev-card${d.id === gCurDevice ? ' active' : ''}" data-id="${escAttr(d.id)}" title="${escAttr(d.name)}">
+      <span class="dot ${d.online ? 'on' : 'off'}"></span>
+      <span class="dev-name">${esc(d.name)}</span>
+      <span class="dev-tag">${d.local ? '本机' : (d.online ? '在线' : '离线')}</span>
+    </div>`).join('');
+  box.querySelectorAll('.dev-card').forEach(el => {
+    el.addEventListener('click', () => gSelectDevice(el.dataset.id));
+  });
+}
+
+async function gSelectDevice(id) {
+  gCurDevice = id;
+  gSelected.clear();
+  // 高亮
+  document.querySelectorAll('#globalDevices .dev-card').forEach(el => {
+    el.classList.toggle('active', el.dataset.id === id);
+  });
+  const dev = gDevices.find(d => d.id === id);
+  // 远端起始路径：从 /api/info 的 pageDir；本机用 currentPath
+  let start = '/';
+  if (dev && dev.local) start = currentPath || '/';
+  else if (dev && dev.base) {
+    try {
+      const info = await fetch(API + '/global/proxy?device=' + encodeURIComponent(id) + '&api=' + encodeURIComponent('/info'));
+      const j = await info.json();
+      start = j.pageDir || '/';
+    } catch (_) {}
+  }
+  await gLoadDir(start);
+}
+
+// 取目录列表（本机直连 /list，远端走 global proxy）
+async function gLoadDir(path) {
+  gCurPath = path;
+  const listEl = document.getElementById('globalList');
+  listEl.innerHTML = '<div class="gempty">加载中…</div>';
+  gUpdateCount();
+  let url;
+  if (gCurDevice === 'self') {
+    url = API + '/list?path=' + encodeURIComponent(path);
+  } else {
+    url = API + '/global/proxy?device=' + encodeURIComponent(gCurDevice)
+      + '&api=' + encodeURIComponent('/list') + '&path=' + encodeURIComponent(path);
+  }
+  try {
+    const res = await fetch(url);
+    const data = await res.json();
+    if (data.error) { listEl.innerHTML = `<div class="gempty" style="color:var(--red)">${esc(data.error)}</div>`; return; }
+    const dev = gDevices.find(d => d.id === gCurDevice);
+    const devName = dev ? dev.name : gCurDevice;
+    gItems = (data.items || []).map(it => ({
+      ...it,
+      devPath: 'dev:' + gCurDevice + ':' + it.path, // 编码：设备 + 真实路径
+    }));
+    gItems.sort((a, b) => (a.isDir === b.isDir) ? String(a.name).localeCompare(String(b.name), 'zh') : (a.isDir ? -1 : 1));
+    document.getElementById('gPath').textContent = devName + ' · ' + (data.current || path);
+    listEl.innerHTML = gItems.length ? gItems.map((f, i) => `
+      <div class="gfile${gSelected.has(f.devPath) ? ' selected' : ''}" data-i="${i}">
+        <div class="checkbox"></div>
+        <span class="gicon">${f.isDir ? '📁' : (getFileType(f.name)?.icon || '📎')}</span>
+        <span class="gname" title="${escAttr(f.name)}">${esc(f.name)}</span>
+        <span class="gsize">${f.isDir ? '文件夹' : fmtSize(f.size)}</span>
+      </div>`).join('')
+      : '<div class="gempty">此目录为空</div>';
+    listEl.querySelectorAll('.gfile').forEach(el => {
+      el.addEventListener('click', () => {
+        const f = gItems[Number(el.dataset.i)];
+        if (f.isDir) { gLoadDir(f.path); return; }
+        if (gSelected.has(f.devPath)) gSelected.delete(f.devPath); else gSelected.add(f.devPath);
+        el.classList.toggle('selected');
+        gUpdateCount();
+      });
+    });
+  } catch (e) {
+    listEl.innerHTML = `<div class="gempty" style="color:var(--red)">加载失败：${esc(e.message)}</div>`;
+  }
+}
+
+function gUpdateCount() {
+  const el = document.getElementById('gCount');
+  if (el) el.textContent = '已选 ' + gSelected.size + ' 项';
+}
+
+// 全网批量下载：复用 verifiedDownload（它已支持 dev: 前缀走 global proxy）
+async function gBatchDownload() {
+  const paths = [...gSelected];
+  if (!paths.length) { toast('请先勾选文件', 'error'); return; }
+  closeGlobalView(); // 关闭全屏以便看到传输面板
+  const panel = ensureTransferPanel(); panel.classList.add('show');
+  const list = document.getElementById('transferList');
+  list.innerHTML = '';
+  let ok = 0, fail = 0;
+  for (const fp of paths) {
+    const name = displayName(fp);
+    const row = document.createElement('div');
+    row.className = 'upload-item';
+    row.innerHTML = `<span class="u-icon">⬇️</span><div class="u-info">
+      <div class="u-name" title="${escAttr(name)}">${esc(name)}</div>
+      <div class="u-bar"><div class="u-fill"></div></div>
+      <div class="u-speed transfer-verify">准备中…</div></div>
+      <span class="u-status transfer-status">…</span>`;
+    list.appendChild(row);
+    const okd = await verifiedDownload(fp, row, row.querySelector('.transfer-verify'), row.querySelector('.u-speed'));
+    if (okd) { row.classList.add('done'); row.querySelector('.transfer-status').textContent = '✓'; ok++; }
+    else { row.classList.add('error'); row.querySelector('.transfer-status').textContent = '✕'; fail++; }
+    await new Promise(r => setTimeout(r, 200));
+  }
+  toast(`全网下载完成 ${ok} 个` + (fail ? `，失败 ${fail}` : ''), fail ? 'error' : 'success');
+}
+
+// 全网打包下载：按设备分组打包（复用 batchDownloadZip 的分组逻辑）
+function gBatchZip() {
+  const paths = [...gSelected];
+  if (!paths.length) { toast('请先勾选文件', 'error'); return; }
+  // 临时把 gSelected 注入全局 selected，调用 batchDownloadZip，再还原
+  const prev = selected;
+  selected = new Set(paths);
+  batchDownloadZip();
+  selected = prev;
+}
+
 // ===== 上传（原始二进制流 + 并发 + 速度显示，保证无损）=====
 function triggerUpload() { document.getElementById('fileInput').click(); }
 function triggerFolderUpload() { document.getElementById('folderInput').click(); }
@@ -1214,7 +1477,7 @@ folderInput.addEventListener('change', () => {
   if (folderInput.files.length) { uploadFiles(folderInput.files); folderInput.value = ''; }
 });
 
-async // 上传一个文件（带断点续传 + 秒传 + 自动重连）
+// 上传一个文件（带断点续传 + 秒传 + 自动重连）
 // 流程：算本地 sha → 查 /api/upload-resume（秒传/断点）→ 只发缺失分片 → 失败重连再查断点
 async function uploadOneFile(file, itemEl) {
   const speedEl0 = itemEl.querySelector('.u-speed');

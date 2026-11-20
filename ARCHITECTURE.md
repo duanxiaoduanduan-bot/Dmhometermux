@@ -270,3 +270,14 @@ DMgeo 的地图编辑在 `map-player.html`、大数据展示屏在 `dashboard.ht
 
 > 一句话：**serverId 做身份 → 握手登记信任 → 列表实时联邦聚合（离线静默降级）→ 路径改写让前端零改动 → 反代 + Range 让远端文件像本地播 → UDP 心跳兜住 IP 漂移。**
 
+### 联邦网盘（8087 全网视图）
+
+转播融合的 `remotes` 不只给 8081 媒体播放器用，8087 网盘**复用同一份 `storage-config.json` 的 serverId/remotes**，多出一层"文件级联邦"：
+
+1. **设备发现**：`GET /api/global/devices` 读 remotes + 逐台 `GET <base>/api/info` 探测在线状态；`loadFederation()` 每次请求重读文件，握手后即时生效、无需重启。
+2. **通用反代**：`GET /api/global/proxy?device=<id>&api=<端点>&...` 是唯一入口。`device=self` → `http://127.0.0.1:8087` 复用本机逻辑；否则按 id 找已登记 remote → 反代到它的网盘。**只认登记过的 id，不接受任意 URL（防 SSRF）**。透传 Range/If-Range 与 Content-* 头 → 远端文件下载/续传像本地一样。
+3. **远端地址**：默认 remote 网盘端口 = 本机端口（全家对称 8087）；`remote.fileBase` / `remote.filePort` 可显式覆盖（双实例/非常规端口）。
+4. **前端路径编码**：全网视图里文件 `path` 编成 `dev:<deviceId>:<真实路径>`；下载/校验/打包函数经 `globalApiUrl()` 解析前缀自动走 global proxy，单设备视图（无前缀）行为完全不变。**打包按设备分组**（pack 在各自设备执行，不能跨设备混打一个 ZIP）。
+
+与媒体联邦的关系：**同一套信任（remotes），两层聚合**——8081 聚合播放列表（`-list.json`），8087 聚合文件目录（`/api/list`）；都不搬文件、不建中心节点，任一台下线其余照常。
+

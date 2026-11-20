@@ -314,3 +314,27 @@ dm → postgis → apps → geodata → start
 **下载续传**：服务端 `/api/download` 原本已支持 HTTP Range(206)，无需改后端；文件右键新增「复制续传命令（PC）」，生成 `curl -L -C -` 与 `aria2c -c` 命令，PC 端中断重跑同一命令即续传。浏览器端不做持久化续传（OPFS/IndexedDB 在手机 Web 不稳、大文件易 OOM）。
 
 **验证（真机 192.168.1.21）**：`node --check` 前后端通过；实测「传 4 字节中断 → 查得 offset=4 → 续传 6 字节 → 文件 = abcdefghij 且整文件 sha 匹配、resumed=true」；秒传 instant=true；谎报 offset 得 409 resumeNeeded 且原文件无损；下载 `Range: bytes=4-9` 返回 206 + Content-Range，`curl -C -` 拼出完整文件；列表不泄漏分片；服务单进程无孤儿；测试产物已清理。改动由断断 commit/push。
+
+---
+
+## 14. 联邦网盘 · 全网视图（v2.5 · 2026-11-20）
+
+把转播融合的 `remotes` 从"媒体播放列表聚合"扩展到"文件级聚合"——网盘顶栏「🌐 全网」可浏览所有握手设备的文件并勾选跨设备下载，实现通过 PTP 设备联合把各自存储连成一个网络硬盘。改动：`DMmedia/file-manager.js`、`DMmedia/file-manager.html`，文档 README / ARCHITECTURE §12 / FILE-MANAGER。
+
+**后端**：8087 网盘直接读同目录 `storage-config.json` 的 serverId/remotes（与 8081 共享同一份配置，握手后即时生效无需重启）；新增 `/api/global/devices`（设备列表 + `/api/info` 在线探测）与唯一入口 `/api/global/proxy?device=&api=&...`（本机→127.0.0.1:8087 复用本机逻辑，远端→其网盘；透传 Range/Content-* 头；只认登记过的 id 防 SSRF）。远端端口默认同本机 8087，支持 `filePort`/`fileBase` 覆盖。
+
+**前端**：顶栏「🌐 全网」全屏视图——设备分栏 + 目录浏览 + 勾选；文件 `path` 编码为 `dev:<id>:<真实路径>`，下载/校验/打包经 `globalApiUrl()` 自动走 global proxy，本机视图零改动；打包按设备分组（各打一个带 SHA-256 清单的 ZIP）；复用已有 SHA-256 校验 + 断点续传。
+
+**验证（真机 192.168.1.21，双实例模拟）**：起 8089 第二实例当"设备 B"，storage-config 配 remote（fileBase→8089）：`/api/global/devices` 显示 self + 设备B 在线；跨设备 list 可见远端文件、hash sha 匹配；跨设备完整下载内容正确、Range 请求返回 206 + Content-Range + 来源设备头；跨设备 pack 的 ZIP 经 Python zipfile `testzip()`=ALL OK、清单齐全。验证后还原配置（remotes 回空）、关 8089、删测试文件；主实例单进程无孤儿。改动由断断 commit/push。
+
+---
+
+## 15. 修复网盘动态内容全空（v2.5 回归 · 2026-11-20）
+
+修复断断反馈的"网盘左侧没有了"：打开 8087 后侧边栏快捷目录与文件列表全空，顶栏静态按钮正常。
+
+**根因**：`DMmedia/file-manager.html` 有一句孤立的 `async` 关键字独占一行（上一版本把 `uploadOneFile` 改为 async 时误留）。`node --check` 语法检查能通过，但浏览器运行时抛 `ReferenceError: async is not defined`，导致整段 `<script>` 顶层执行中断、启动 IIFE 不运行，侧边栏与文件列表都无法渲染。后端接口全部正常，故现象具有迷惑性。
+
+**修复**：删除孤立 `async`，仅保留 `async function uploadOneFile`。已同步设备、两端哈希一致，页面 HTTP 200、服务单进程无孤儿。
+
+**教训**：前端改动除 `node --check` 外，须再用 Node + DOM stub `eval()` 整段内联 JS 捕获此类运行时 `ReferenceError`。
