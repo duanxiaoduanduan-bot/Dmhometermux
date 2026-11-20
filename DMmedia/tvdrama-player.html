@@ -12,9 +12,6 @@ body{font-family:-apple-system,"PingFang SC","Microsoft YaHei","Helvetica Neue",
 .header .actions{margin-left:auto;display:flex;gap:6px}
 .header .actions button{padding:5px 14px;border-radius:14px;border:1px solid rgba(255,255,255,.1);background:rgba(255,255,255,.06);color:#aaa;font-size:11px;cursor:pointer}
 .header .actions button:hover{background:rgba(255,255,255,.12);color:#fff}
-.header .actions .search{margin-right:2px;padding:5px 14px;border-radius:14px;border:1px solid rgba(255,255,255,.1);background:rgba(255,255,255,.06);color:#eee;font-size:11px;width:150px;outline:none}
-.header .actions .search:focus{border-color:rgba(231,76,60,.5);background:rgba(255,255,255,.1)}
-.header .actions .search::placeholder{color:#777}
 
 /* 主布局：左右卡片 */
 .main{flex:1;display:flex;gap:16px;padding:16px;overflow:hidden;align-items:flex-start;justify-content:center}
@@ -87,6 +84,18 @@ body.fullscreen .cp video{width:100%;height:100%;object-fit:contain;background:#
 /* 选集条置于播放栏上方，避免被遮挡 */
 body.fullscreen .ep-list{bottom:76px}
 
+/* ===== 搜索栏 ===== */
+.searchbar{display:flex;align-items:center;gap:10px;padding:8px 16px;background:rgba(0,0,0,.2);border-bottom:1px solid rgba(255,255,255,.04);flex-shrink:0}
+.searchbar .sb-inner{display:flex;align-items:center;gap:8px;flex:1;max-width:440px;background:rgba(255,255,255,.05);border:1px solid rgba(255,255,255,.1);border-radius:16px;padding:6px 14px;transition:border-color .2s}
+.searchbar .sb-inner:focus-within{border-color:rgba(231,76,60,.55)}
+.searchbar .sb-ico{font-size:12px;opacity:.7}
+.searchbar input{flex:1;min-width:0;background:none;border:none;outline:none;color:#e0e0e0;font-size:13px;font-family:inherit}
+.searchbar input::placeholder{color:#666}
+.searchbar .clr{display:none;background:none;border:none;color:#888;cursor:pointer;font-size:13px;padding:0 2px;line-height:1}
+.searchbar .clr.show{display:block}
+.searchbar .clr:hover{color:#fff}
+.searchbar .sb-cnt{font-size:11px;color:#777;white-space:nowrap}
+
 @media(max-width:768px){
   .main{flex-direction:column;align-items:stretch;gap:12px;padding:10px}
   .side{width:100%;max-height:35vh}
@@ -105,13 +114,17 @@ body.fullscreen .ep-list{bottom:76px}
 <div class="drop-overlay" id="dz"><div style="font-size:48px">📺</div><p>放开添加电视剧</p></div>
 <div class="header"><h1>📺 电视剧</h1><span class="st" id="status">...</span>
 <div class="actions">
-<input class="search" id="q" placeholder="🔍 搜索剧名" oninput="onSearch(this.value)">
 <button onclick="document.getElementById('fi').click()">📂 选文件</button>
 <button onclick="document.getElementById('fd').click()">📁 选文件夹</button>
 <button onclick="loadList()">🔄 刷新</button>
 </div>
 <input type="file" id="fi" multiple accept="video/*" style="display:none" onchange="addLocal(this.files)">
 <input type="file" id="fd" webkitdirectory multiple accept="video/*" style="display:none" onchange="addLocal(this.files)">
+</div>
+
+<div class="searchbar">
+  <div class="sb-inner"><span class="sb-ico">🔍</span><input id="q" placeholder="搜索剧名 / 集名…" oninput="onSearch(this.value)"><button class="clr" id="qclr" onclick="clearQ()">✕</button></div>
+  <span class="sb-cnt" id="qcnt"></span>
 </div>
 
 <div class="main">
@@ -142,8 +155,7 @@ body.fullscreen .ep-list{bottom:76px}
 </div>
 
 <script>
-let sg=[],ci=-1,ei=-1,shf=false,q='',V=document.getElementById('vp');
-function onSearch(v){q=(v||'').trim().toLowerCase();up()}
+let sg=[],ci=-1,ei=-1,shf=false,V=document.getElementById('vp');
 const $=i=>document.getElementById(i),pl=$('pl'),nt=$('nt'),na=$('na'),pB=$('pB'),rB=$('pBar'),cT=$('cT'),tT=$('tT'),st=$('status'),ht=$('hint'),sc=$('sc'),dz=$('dz'),cp=$('cp'),es=$('es'),vo=$('vo'),epBar=$('epBar'),pb=$('pb'),body=$('body'),volBar=$('volBar'),volBtn=$('volBtn');
 
 function curSeries(){return ci>=0?sg[ci]:null}
@@ -186,21 +198,24 @@ async function loadList(){
     var d=await r.json();
     if(!d||!d.series||!d.series.length)throw Error('empty');
     sg=d.series;st.textContent='📺 '+sg.length+'部';ht.textContent='';es.style.display='none';
-    up();if(sg.length){if(!tryResume()){if(ci<0)selectSeries(0)}}
+    up();
+    var _st=loadTvState();
+    if(_st&&_st.ci>=0&&_st.ci<sg.length){selectSeries(_st.ci,_st.ei);}
+    else if(ci<0)selectSeries(0);
   }catch(e){
     st.textContent='📂 本地模式';
     ht.innerHTML='拖拽电视剧到窗口<br>或点「选文件」';
   }
 }
 
-function selectSeries(i){
+function selectSeries(i,startEp){
   if(i<0||i>=sg.length)return;ci=i;ei=-1;
   var s=sg[i];
   nt.textContent=s.name;na.textContent=(s.episodes?.length||0)+'集';
   V.pause();V.src='';V.style.display='none';vo.style.display='none';es.style.display='none';
   pB.textContent='▶';rB.value=0;cT.textContent='00:00';tT.textContent='00:00';
   up();renderEpBar();
-  if(s.episodes&&s.episodes.length)playEp(0);
+  if(s.episodes&&s.episodes.length)playEp((typeof startEp==='number'&&startEp>=0&&startEp<s.episodes.length)?startEp:0);
 }
 
 function renderEpBar(){
@@ -228,26 +243,28 @@ function renderEpBar(){
   });
 }
 
-function playEp(j, resumeTime){
+function armPlay(el){
+  if(!el)return;
+  el.play().catch(function(){
+    var once=function(){el.play().catch(function(){});cleanup()};
+    var cleanup=function(){document.removeEventListener('pointerdown',once);document.removeEventListener('keydown',once);document.removeEventListener('touchstart',once)};
+    document.addEventListener('pointerdown',once,{once:true});
+    document.addEventListener('keydown',once,{once:true});
+    document.addEventListener('touchstart',once,{once:true});
+  });
+}
+function playEp(j){
   var s=curSeries();if(!s||!s.episodes||!s.episodes[j])return;ei=j;
   var ep=s.episodes[j];
   nt.textContent=s.name+' - '+ep.title;na.textContent=(j+1)+'/'+s.episodes.length+'集';
-  V.src=ep.file||ep.url;
-  if(resumeTime!=null && isFinite(resumeTime)){
-    V.addEventListener('loadedmetadata',function(){var d=V.duration;if(isFinite(d)&&resumeTime>d)resumeTime=d;V.currentTime=Math.max(0,resumeTime);pB.textContent='⏸';armPlay(V);},{once:true});
-    pB.textContent='⏸';vo.style.display='none';es.style.display='none';V.style.display='block';
-  } else {
-    pB.textContent='⏸';vo.style.display='none';es.style.display='none';V.style.display='block';armPlay(V);
-  }
+  rB.value=0;cT.textContent='00:00';tT.textContent='00:00';
+  V.src=ep.file||ep.url;armPlay(V);
   V.volume=volBar.value/100;
-  V.ontimeupdate=function(){if(V.duration&&isFinite(V.duration)&&!dragging){rB.value=(V.currentTime/V.duration)*1000;cT.textContent=f(V.currentTime)}saveProgressThrottled()};
-  V.onloadedmetadata=function(){tT.textContent=f(V.duration)};
-  V.ondurationchange=function(){if(isFinite(V.duration))tT.textContent=f(V.duration)};
-  V.onended=function(){rB.value=0;cT.textContent='00:00';nextEp()};
-  V.onerror=function(){rB.value=0;cT.textContent='00:00';nextEp()};
-  V.onplay=function(){pB.textContent='⏸';vo.style.display='none'};
-  V.onpause=function(){pB.textContent='▶';vo.style.display='flex'};
-  V.onclick=function(e){e.stopPropagation();togP()};
+  pB.textContent='⏸';vo.style.display='none';es.style.display='none';V.style.display='block';
+  saveTvState();
+  var _k=ep.file||ep.url,_pos=loadPos(_k),_lastSave=0;
+  V.ontimeupdate=function(){if(V.duration&&isFinite(V.duration)&&!dragging){rB.value=(V.currentTime/V.duration)*1000;cT.textContent=f(V.currentTime)}if(V.currentTime-_lastSave>5){savePos(_k,V.currentTime,V.duration);_lastSave=V.currentTime}};V.onloadedmetadata=function(){tT.textContent=f(V.duration);if(_pos&&_pos.t>0&&(!V.duration||_pos.t<V.duration-3)){V.currentTime=_pos.t;rB.value=(_pos.t/V.duration)*1000;cT.textContent=f(_pos.t);_lastSave=_pos.t}};V.ondurationchange=function(){if(isFinite(V.duration))tT.textContent=f(V.duration)};V.onended=function(){clearPos(_k);rB.value=0;cT.textContent='00:00';nextEp()};V.onerror=function(){rB.value=0;cT.textContent='00:00';nextEp()};
+  V.onplay=function(){pB.textContent='⏸';vo.style.display='none'};V.onpause=function(){pB.textContent='▶';vo.style.display='flex'};V.onclick=function(e){e.stopPropagation();togP()};
   renderEpBar();up();
 }
 
@@ -258,7 +275,7 @@ function nextEp(){
   }
 }
 
-function togP(){if(!curEp()){if(curSeries()&&curSeries().episodes.length)playEp(0);return}if(V.paused){V.play().catch(function(){});pB.textContent='⏸';vo.style.display='none'}else{V.pause();pB.textContent='▶';vo.style.display='flex'}}
+function togP(){if(!curEp()){if(curSeries()&&curSeries().episodes.length)playEp(0);return}if(V.paused){armPlay(V);pB.textContent='⏸';vo.style.display='none'}else{V.pause();pB.textContent='▶';vo.style.display='flex'}}
 function nx(){if(!sg.length)return;var n;if(shf)do{n=Math.floor(Math.random()*sg.length)}while(n===ci&&sg.length>1);else{n=ci+1;if(n>=sg.length)n=0}selectSeries(n)}
 function pr(){if(V.currentTime>3){V.currentTime=0;return}if(ci>0)selectSeries(ci-1);else selectSeries(sg.length-1)}
 function toggleFS(){
@@ -283,59 +300,32 @@ function skStart(){dragging=true}
 function skDrag(){if(!dragging)return;var d=V.duration;if(!d||!isFinite(d))return;cT.textContent=f((rB.value/1000)*d)}
 function skEnd(){dragging=false;var d=V.duration;if(!d||!isFinite(d))return;var t=(rB.value/1000)*d;if(t>=0&&t<=d)V.currentTime=t}
 function f(s){if(!s||isNaN(s)||!isFinite(s))return'00:00';return String(Math.floor(s/60)).padStart(2,'0')+':'+String(Math.floor(s%60)).padStart(2,'0')}
-function up(){
-  pl.innerHTML='';
-  var vis=sg.map(function(s,i){return {s:s,i:i}}).filter(function(o){if(!q)return true;return (o.s.name||'').toLowerCase().indexOf(q)>-1});
-  sc.textContent='('+vis.length+'/'+sg.length+'部)';
-  if(!vis.length){pl.innerHTML='<div style="padding:30px;text-align:center;color:#555;font-size:12px;">无匹配结果</div>';return}
-  vis.forEach(function(o){
-    var i=o.i,s=o.s;
-    var r=document.createElement('div');r.className='sr'+(i===ci?' act':'');
-    r.innerHTML='<div class="ix">'+(i+1)+'</div><div class="nf"><div class="nm">'+s.name+'</div><div class="ar">'+(s.episodes?s.episodes.length+'集':'')+'</div></div>';
-    r.onclick=function(j){return function(){if(j===ci)return;selectSeries(j)}}(i);
-    pl.appendChild(r);
-  });
-}
-document.addEventListener('keydown',function(e){if(e.key===' '){e.preventDefault();togP()}if(e.key==='f'||e.key==='F'){toggleFS()}if(e.key==='ArrowUp'&&ei>0)playEp(ei-1);if(e.key==='ArrowDown'&&curSeries()&&ei<curSeries().episodes.length-1)playEp(ei+1);if(e.key==='m'||e.key==='M'){toggleMute()}});
-// ===== 续播：localStorage 进度保存/恢复 =====
-var _lastSave=0;
-function saveProgress(){
-  if(ci<0||ei<0)return;
-  var s=curSeries(); if(!s||!s.episodes[ei])return;
-  var ep=s.episodes[ei]; if(!ep.file)return;
-  var map=JSON.parse(localStorage.getItem('dmprog_tvdrama')||'{}');
-  map.__last={seriesId:s.id, epIndex:ei, time:Math.floor(V.currentTime)};
-  try{localStorage.setItem('dmprog_tvdrama',JSON.stringify(map))}catch(e){}
-}
-function saveProgressThrottled(){var now=Date.now();if(now-_lastSave<3000)return;_lastSave=now;saveProgress()}
-// 自动播放：浏览器禁止无交互自动播放时，首次点击/按键/触屏补播
-function armPlay(el){
-  if(!el)return;
-  el.play().catch(function(){
-    var once=function(){el.play().catch(function(){});cleanup()};
-    var cleanup=function(){document.removeEventListener('pointerdown',once);document.removeEventListener('keydown',once);document.removeEventListener('touchstart',once)};
-    document.addEventListener('pointerdown',once,{once:true});
-    document.addEventListener('keydown',once,{once:true});
-    document.addEventListener('touchstart',once,{once:true});
-  });
-}
-function tryResume(){
-  var map=JSON.parse(localStorage.getItem('dmprog_tvdrama')||'{}');
-  if(map.__last){
-    var L=map.__last;
-    var idx=sg.findIndex(function(s){return s.id===L.seriesId});
-    if(idx>=0 && sg[idx].episodes && sg[idx].episodes[L.epIndex]){
-      ci=idx;ei=-1;var s=sg[idx];
-      nt.textContent=s.name;na.textContent=(s.episodes?s.episodes.length+'集':'');
-      V.pause();V.src='';V.style.display='none';vo.style.display='none';es.style.display='none';
-      pB.textContent='▶';rB.value=0;cT.textContent='00:00';tT.textContent='00:00';
-      up();renderEpBar();
-      playEp(L.epIndex, L.time);
-      return true;
-    }
-  }
-  return false;
-}
+// 断点续播：按文件路径存进度（localStorage）
+var RESUME_KEY='dmmedia_resume_tv';
+function savePos(k,t,d){try{localStorage.setItem(RESUME_KEY,JSON.stringify({k:k,t:t,d:d}))}catch(e){}}
+function loadPos(k){try{var s=localStorage.getItem(RESUME_KEY);if(!s)return null;var o=JSON.parse(s);return(o&&o.k===k&&typeof o.t==='number')?o:null}catch(e){return null}}
+function clearPos(k){try{var o=JSON.parse(localStorage.getItem(RESUME_KEY)||'null');if(o&&o.k===k)localStorage.removeItem(RESUME_KEY)}catch(e){}}
+// 电视剧：记住上次看到第几部第几集
+var TV_STATE='dmmedia_tv_state';
+function saveTvState(){try{localStorage.setItem(TV_STATE,JSON.stringify({ci:ci,ei:ei}))}catch(e){}}
+function loadTvState(){try{var s=localStorage.getItem(TV_STATE);if(!s)return null;return JSON.parse(s)}catch(e){return null}}
+// ===== 名字搜索（剧名 / 集名） =====
+var q='';
+function tvResults(){var r=[];for(var i=0;i<sg.length;i++){var s=sg[i],nm=(s.name||'').toLowerCase();
+  if(nm.indexOf(q)>=0){r.push({si:i,ei:-1,label:s.name,sub:(s.episodes?s.episodes.length+'集':'')});continue}
+  if(s.episodes){for(var j=0;j<s.episodes.length;j++){if(((s.episodes[j].title||'')).toLowerCase().indexOf(q)>=0){r.push({si:i,ei:j,label:s.episodes[j].title,sub:(s.name||'')+' · 第'+(j+1)+'集'});break}}}}
+  return r}
+function onSearch(v){q=(v||'').trim().toLowerCase();$('qclr').classList.toggle('show',!!q);$('qcnt').textContent=q?('找到 '+tvResults().length+' 条'):'';up()}
+function clearQ(){$('q').value='';onSearch('')}
+function up(){pl.innerHTML='';
+ if(q){var res=tvResults();sc.textContent='匹配 '+res.length;
+  if(!res.length){pl.innerHTML='<div style="padding:30px;text-align:center;color:#555;font-size:12px;">无匹配</div>';return}
+  for(var n=0;n<res.length;n++){(function(o){var r=document.createElement('div');r.className='sr'+((o.si===ci&&(o.ei<0||o.ei===ei))?' act':'');r.innerHTML='<div class="ix">'+(o.ei>=0?(o.ei+1):'📺')+'</div><div class="nf"><div class="nm">'+o.label+'</div><div class="ar">'+o.sub+'</div></div>';r.onclick=function(){selectSeries(o.si,o.ei>=0?o.ei:undefined)};pl.appendChild(r)})(res[n])}
+  return}
+ sc.textContent='('+sg.length+'部)';
+ if(!sg.length){pl.innerHTML='<div style="padding:30px;text-align:center;color:#555;font-size:12px;">暂无</div>';return}
+ for(var i=0;i<sg.length;i++){var s=sg[i];var r=document.createElement('div');r.className='sr'+(i===ci?' act':'');r.innerHTML='<div class="ix">'+(i+1)+'</div><div class="nf"><div class="nm">'+s.name+'</div><div class="ar">'+(s.episodes?s.episodes.length+'集':'')+'</div></div>';r.onclick=function(j){return function(){if(j===ci)return;selectSeries(j)}}(i);pl.appendChild(r)}}
+document.addEventListener('keydown',function(e){var t=e.target;if(t&&(t.tagName==='INPUT'||t.tagName==='TEXTAREA'))return;if(e.key==='Escape'&&q){clearQ();return}if(e.key===' '){e.preventDefault();togP()}if(e.key==='f'||e.key==='F'){toggleFS()}if(e.key==='ArrowUp'&&ei>0)playEp(ei-1);if(e.key==='ArrowDown'&&curSeries()&&ei<curSeries().episodes.length-1)playEp(ei+1);if(e.key==='m'||e.key==='M'){toggleMute()}});
 loadList();up();
 </script>
 </body>

@@ -18,6 +18,50 @@ if (!fs.existsSync(FILES_DIR)) fs.mkdirSync(FILES_DIR, { recursive: true });
 const MD_DIR = path.join(ROOT, 'mdfiles');
 if (!fs.existsSync(MD_DIR)) fs.mkdirSync(MD_DIR, { recursive: true });
 
+// 聊天记录存储（独立文件夹 chatlogs，按天分文件，JSONL 一行一条）
+const CHATLOG_DIR = path.join(ROOT, 'chatlogs');
+if (!fs.existsSync(CHATLOG_DIR)) fs.mkdirSync(CHATLOG_DIR, { recursive: true });
+
+function localDateStr(ts) {
+  const d = new Date(ts || Date.now());
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${y}-${m}-${day}`;
+}
+
+function appendChatLog(entry) {
+  try {
+    const date = localDateStr(entry.time);          // YYYY-MM-DD
+    const monthDir = path.join(CHATLOG_DIR, date.slice(0, 7)); // YYYY-MM
+    if (!fs.existsSync(monthDir)) fs.mkdirSync(monthDir, { recursive: true });
+    const file = path.join(monthDir, date + '.jsonl');
+    fs.appendFileSync(file, JSON.stringify(entry) + '\n');
+  } catch (_) { /* 记录失败不影响聊天 */ }
+}
+
+// 递归列出所有聊天记录日期（兼容旧的平铺 jsonl 与新的按月子文件夹）
+function listChatDates() {
+  const dates = [];
+  try {
+    if (!fs.existsSync(CHATLOG_DIR)) return dates;
+    for (const name of fs.readdirSync(CHATLOG_DIR)) {
+      const p = path.join(CHATLOG_DIR, name);
+      let st;
+      try { st = fs.statSync(p); } catch (_) { continue; }
+      if (st.isDirectory()) {
+        for (const f of fs.readdirSync(p)) {
+          if (f.endsWith('.jsonl')) dates.push(f.replace(/\.jsonl$/, ''));
+        }
+      } else if (name.endsWith('.jsonl')) {
+        dates.push(name.replace(/\.jsonl$/, ''));
+      }
+    }
+  } catch (_) {}
+  dates.sort().reverse();
+  return dates;
+}
+
 const MIME = {
   '.html': 'text/html; charset=utf-8',
   '.js': 'application/javascript',
@@ -534,6 +578,43 @@ const requestHandler = (req, res) => {
     return;
   }
 
+  if (reqPath === '/api/chat-dates' && req.method === 'GET') {
+    const token = url.searchParams.get('token');
+    const uid = tokens.get(token);
+    if (!uid || !users[uid]) { res.writeHead(403, ctJson); return res.end(JSON.stringify({ error: '未登录' })); }
+    try {
+      const dates = listChatDates();
+      res.writeHead(200, ctJson);
+      res.end(JSON.stringify({ ok: true, dates }));
+    } catch (e) {
+      res.writeHead(500, ctJson);
+      res.end(JSON.stringify({ error: e.message }));
+    }
+    return;
+  }
+
+  // === 聊天记录：某日明细 ===
+  if (reqPath === '/api/chat-history' && req.method === 'GET') {
+    const token = url.searchParams.get('token');
+    const uid = tokens.get(token);
+    if (!uid || !users[uid]) { res.writeHead(403, ctJson); return res.end(JSON.stringify({ error: '未登录' })); }
+    const date = url.searchParams.get('date') || localDateStr(Date.now());
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) { res.writeHead(400, ctJson); return res.end(JSON.stringify({ error: '日期格式错误' })); }
+    let file = path.join(CHATLOG_DIR, date.slice(0, 7), date + '.jsonl');
+    if (!fs.existsSync(file)) file = path.join(CHATLOG_DIR, date + '.jsonl'); // 兼容旧的平铺文件
+    const arr = [];
+    if (fs.existsSync(file)) {
+      const lines = fs.readFileSync(file, 'utf8').split('\n');
+      for (const ln of lines) {
+        if (ln.trim()) { try { arr.push(JSON.parse(ln)); } catch (_) {} }
+      }
+    }
+    res.writeHead(200, ctJson);
+    res.end(JSON.stringify({ ok: true, date, messages: arr }));
+    return;
+  }
+
+
   if (reqPath === '/') reqPath = '/index.html';
 
   const filePath = path.join(ROOT, reqPath);
@@ -557,7 +638,7 @@ const server = http.createServer(requestHandler);
 const wss = new WebSocketServer({ server });
 let nextId = 1;
 
-wss.on('connection', (ws) => {
+function handleConnection(ws) {
   const userId = 'u' + (nextId++);
   const info = { id: userId, name: '', time: Date.now() };
   clients.set(ws, info);
@@ -600,10 +681,17 @@ wss.on('connection', (ws) => {
         break;
 
       case 'chat':
-        broadcastAll({
-          type: 'chat', from: info.id, fromName: info.name,
-          text: (msg.text || '').slice(0, 2000), time: Date.now(),
-        });
+        {
+          const chatTime = Date.now();
+          const entry = {
+            type: 'chat', from: info.id, fromName: info.name,
+            text: (msg.text || '').slice(0, 2000), time: chatTime,
+            file: msg.file || null,
+          };
+          appendChatLog(entry);
+          broadcastAll(entry);
+        }
+        break;
         break;
 
       // --- 轮麦 ---
@@ -776,7 +864,7 @@ wss.on('connection', (ws) => {
   });
 
   ws.on('error', () => {});
-});
+}
 
 // ===== 启动 =====
 const os = require('os');
@@ -811,7 +899,8 @@ if (fs.existsSync(CERT_KEY) && fs.existsSync(CERT_CRT)) {
   try {
     const tlsOpts = { key: fs.readFileSync(CERT_KEY), cert: fs.readFileSync(CERT_CRT) };
     const httpsServer = https.createServer(tlsOpts, requestHandler);
-    new WebSocketServer({ server: httpsServer }); // 复用同一逻辑，wss:// 自动可用
+    const wssHttps = new WebSocketServer({ server: httpsServer });
+    wssHttps.on('connection', handleConnection); // 复用同一逻辑，wss:// 自动可用
     httpsServer.listen(HTTPS_PORT, '0.0.0.0', () => {
       const ips = detectIps();
       console.log('  🔒 DMChat HTTPS 已启用: https://' + (ips[0] || '0.0.0.0') + ':' + HTTPS_PORT + '  （屏幕共享/通话请走这个地址）');
@@ -822,6 +911,8 @@ if (fs.existsSync(CERT_KEY) && fs.existsSync(CERT_CRT)) {
 } else {
   console.log('  [info] 未找到 certs/dmchat.key+crt，仅 HTTP。运行 DMChat/install.sh 可自动签发自签证书以启用屏幕共享/通话。');
 }
+
+wss.on('connection', handleConnection);
 
 server.listen(PORT, '0.0.0.0', () => {
   const ips = detectIps();

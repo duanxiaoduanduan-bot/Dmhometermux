@@ -205,6 +205,7 @@ input { font-family: inherit; }
     <button onclick="openVideo()" style="padding:5px 12px;border-radius:6px;border:1px solid var(--border);background:var(--surface2);color:var(--text);font-size:12px" title="一起看视频">🎬</button>
     <button onclick="startCall('video')" style="padding:5px 12px;border-radius:6px;border:1px solid var(--border);background:var(--surface2);color:var(--text);font-size:12px" title="视频通话">📹</button>
     <button onclick="startCall('voice')" style="padding:5px 12px;border-radius:6px;border:1px solid var(--border);background:var(--surface2);color:var(--text);font-size:12px" title="语音通话">🎤</button>
+    <button onclick="openHistoryPanel()" style="padding:5px 12px;border-radius:6px;border:1px solid var(--border);background:var(--surface2);color:var(--text);font-size:12px" title="聊天记录">📜 记录</button>
   </div>
 
   <div class="video-section" id="videoSection">
@@ -274,6 +275,7 @@ input { font-family: inherit; }
 <div class="incoming-dialog" id="adminPanel"><div class="incoming-box" style="text-align:left;max-width:500px"><div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px"><b>⚙️ 管理员面板</b><button onclick="closeAdminPanel()" style="background:var(--red);color:#fff;border:none;padding:4px 12px;border-radius:4px;font-size:12px;cursor:pointer">关闭</button></div><div style="margin-bottom:12px"><button onclick="genInvite()" style="padding:8px 16px;background:var(--blue);color:#fff;border:none;border-radius:6px;font-size:13px;cursor:pointer">🎫 生成邀请码</button></div><div style="font-size:12px;color:var(--text2);margin-bottom:8px">已有邀请码：</div><div id="inviteList" style="max-height:200px;overflow:auto;font-size:12px"></div></div></div>
 
 <div class="incoming-dialog" id="settingsPanel"><div class="incoming-box" style="text-align:left;max-width:420px"><div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px"><b>🔧 我的设置</b><button onclick="closeSettings()" style="background:var(--red);color:#fff;border:none;padding:4px 12px;border-radius:4px;font-size:12px;cursor:pointer">关闭</button></div>
+<div class="incoming-dialog" id="historyPanel"><div class="incoming-box" style="text-align:left;max-width:620px;width:92%"><div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px"><b>📜 聊天记录</b><button onclick="closeHistoryPanel()" style="background:var(--red);color:#fff;border:none;padding:4px 12px;border-radius:4px;font-size:12px;cursor:pointer">关闭</button></div><div style="display:flex;gap:8px;align-items:center;margin-bottom:10px;flex-wrap:wrap"><select id="historyDate" onchange="loadHistoryDate(this.value)" style="padding:6px 10px;border-radius:6px;border:1px solid var(--border);background:var(--surface);color:var(--text);font-size:13px"></select><span id="historyCount" style="font-size:12px;color:var(--text2)"></span><button onclick="exportHistory()" style="margin-left:auto;padding:6px 14px;background:var(--blue);color:#fff;border:none;border-radius:6px;font-size:12px;cursor:pointer">⬇ 导出 TXT</button></div><div id="historyList" style="max-height:55vh;overflow:auto;font-size:13px;display:flex;flex-direction:column;gap:6px"></div></div></div>
 <div style="font-size:13px;font-weight:600;margin-bottom:6px">🔑 修改密码</div>
 <input type="password" id="oldPass" placeholder="旧密码" style="width:100%;padding:10px 12px;margin:4px 0;border-radius:6px;border:1px solid var(--border);background:var(--surface2);color:var(--text);font-size:14px;box-sizing:border-box">
 <input type="password" id="newPass" placeholder="新密码（至少4位）" style="width:100%;padding:10px 12px;margin:4px 0;border-radius:6px;border:1px solid var(--border);background:var(--surface2);color:var(--text);font-size:14px;box-sizing:border-box">
@@ -379,6 +381,7 @@ function handleMsg(msg){
       renderAll(); updateButtonStates();
       if(currentSpeaker) updateSpeakerBar();
       addSystemMsg('✅ '+myName+'，欢迎！');
+      loadTodayHistory();
       break;
     case 'user-join': if(!users.find(u=>u.id===msg.user.id)) users.push(msg.user); renderAll(); addSystemMsg('👋 '+msg.user.name+' 加入了聊天'); if(currentSpeaker===myId) sendVoiceOfferTo(msg.user.id); break;
     case 'user-leave': users=users.filter(u=>u.id!==msg.user.id); if(msg.queue) speakQueue=msg.queue; if(msg.currentSpeaker!==undefined) currentSpeaker=msg.currentSpeaker; renderAll(); updateButtonStates(); if(currentSpeaker) updateSpeakerBar(); else clearSpeakerBar(); addSystemMsg('👋 '+msg.user.name+' 离开了聊天'); break;
@@ -600,6 +603,88 @@ if(window.innerWidth<=768) document.querySelector('.btn-menu').style.display='';
 
 function addChatMsg(msg){ const c=document.getElementById('messages'), div=document.createElement('div'); div.className='msg-row'+(msg.from===myId?' mine':''); let bubbleContent=esc(msg.text); if(msg.file){ const fid='f'+ (++fileIdCounter); fileStore[fid]=msg.file; bubbleContent='<span class="file-link" data-fid="'+fid+'" style="cursor:pointer;text-decoration:underline;color:var(--blue)">'+esc(msg.text)+'</span>'; } div.innerHTML=`<div class="msg-avatar" style="background:${avatarColor(msg.from)}">${(msg.fromName||'?')[0]}</div><div class="msg-body"><div class="msg-name">${esc(msg.fromName)}</div><div class="msg-bubble">${bubbleContent}</div><div class="msg-time">${fmtTime(msg.time)}</div></div>`; c.appendChild(div); c.scrollTop=c.scrollHeight; }
 document.getElementById('messages').addEventListener('click',function(e){ const el=e.target.closest('.file-link'); if(el&&el.dataset.fid){ const fd=fileStore[el.dataset.fid]; if(fd) handleFileClick(fd); } });
+
+// ===== 聊天记录（本地持久化历史） =====
+function todayStrClient(){ const d=new Date(); const p=n=>String(n).padStart(2,'0'); return `${d.getFullYear()}-${p(d.getMonth()+1)}-${p(d.getDate())}`; }
+function fmtDateFull(ts){ const d=new Date(ts); const p=n=>String(n).padStart(2,'0'); return `${d.getFullYear()}-${p(d.getMonth()+1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`; }
+
+async function openHistoryPanel(){
+  document.getElementById('historyPanel').classList.add('show');
+  try{
+    const r=await fetch('/api/chat-dates?token='+encodeURIComponent(myToken));
+    const d=await r.json();
+    const sel=document.getElementById('historyDate');
+    if(d.error){ sel.innerHTML='<option>加载失败</option>'; return; }
+    if(!d.dates.length){ sel.innerHTML='<option>暂无记录</option>'; document.getElementById('historyList').innerHTML='<div class="msg-system">还没有聊天记录</div>'; document.getElementById('historyCount').textContent=''; return; }
+    sel.innerHTML=d.dates.map(dt=>`<option value="${dt}">${dt}</option>`).join('');
+    loadHistoryDate(d.dates[0]);
+  }catch(e){ toast('加载失败','error'); }
+}
+function closeHistoryPanel(){ document.getElementById('historyPanel').classList.remove('show'); }
+
+// 用当前版 addChatMsg 的渲染方式渲染一条历史消息到指定容器
+function renderHistoryMsgInto(container, m){
+  const div=document.createElement('div');
+  div.className='msg-row'+(m.from===myId?' mine':'');
+  let bubbleContent=esc(m.text);
+  if(m.file){
+    const fid='hf_'+(++fileIdCounter);
+    fileStore[fid]=m.file;
+    bubbleContent='<span class="file-link" data-fid="'+fid+'" style="cursor:pointer;text-decoration:underline;color:var(--blue)">'+esc(m.text)+'</span>';
+  }
+  div.innerHTML=`<div class="msg-avatar" style="background:${avatarColor(m.from)}">${(m.fromName||'?')[0]}</div><div class="msg-body"><div class="msg-name">${esc(m.fromName)} <span style="font-size:10px;color:var(--text3)">${fmtDateFull(m.time)}</span></div><div class="msg-bubble">${bubbleContent}</div></div>`;
+  div.addEventListener('click',function(e){
+    const el=e.target.closest('.file-link');
+    if(el&&el.dataset.fid){ const fd=fileStore[el.dataset.fid]; if(fd) handleFileClick(fd); }
+  });
+  container.appendChild(div);
+}
+
+async function loadHistoryDate(date){
+  if(!date) return;
+  const list=document.getElementById('historyList');
+  list.innerHTML='<div class="msg-system">加载中…</div>';
+  try{
+    const r=await fetch('/api/chat-history?token='+encodeURIComponent(myToken)+'&date='+encodeURIComponent(date));
+    const d=await r.json();
+    if(d.error){ list.innerHTML='<div class="msg-system">'+esc(d.error)+'</div>'; return; }
+    document.getElementById('historyCount').textContent='共 '+d.messages.length+' 条';
+    if(!d.messages.length){ list.innerHTML='<div class="msg-system">当天暂无聊天</div>'; return; }
+    list.innerHTML='';
+    for(const m of d.messages) renderHistoryMsgInto(list, m);
+  }catch(e){ list.innerHTML='<div class="msg-system">加载失败</div>'; }
+}
+
+function exportHistory(){
+  const date=document.getElementById('historyDate').value;
+  if(!date) return;
+  fetch('/api/chat-history?token='+encodeURIComponent(myToken)+'&date='+encodeURIComponent(date))
+    .then(r=>r.json()).then(d=>{
+      if(d.error||!d.messages.length){ toast('无记录可导出','error'); return; }
+      let txt='DMChat 聊天记录 '+date+'\n'+'='.repeat(40)+'\n';
+      for(const m of d.messages){ txt+=`[${fmtDateFull(m.time)}] ${m.fromName}: ${m.text}\n`; }
+      const blob=new Blob([txt],{type:'text/plain;charset=utf-8'});
+      const a=document.createElement('a');
+      a.href=URL.createObjectURL(blob);
+      a.download=`chatlog-${date}.txt`;
+      a.click();
+      URL.revokeObjectURL(a.href);
+    }).catch(()=>toast('导出失败','error'));
+}
+
+// 加入时加载当日历史（仅在首次、主聊天区尚无消息时）
+async function loadTodayHistory(){
+  if(document.getElementById('messages').querySelector('.msg-row')) return;
+  try{
+    const today=todayStrClient();
+    const r=await fetch('/api/chat-history?token='+encodeURIComponent(myToken)+'&date='+encodeURIComponent(today));
+    const d=await r.json();
+    if(d.ok && d.messages && d.messages.length){
+      for(const m of d.messages){ addChatMsg(m); autoEmbedIfMd(m); }
+    }
+  }catch(_){}
+}
+
 function addSystemMsg(text){ const c=document.getElementById('messages'), div=document.createElement('div'); div.className='msg-system'; div.textContent=text; c.appendChild(div); c.scrollTop=c.scrollHeight; }
 function sendChat(){ const input=document.getElementById('msgInput'), text=input.value.trim(); if(!text||!ws) return; ws.send(JSON.stringify({type:'chat',text})); input.value=''; input.style.height='auto'; }
 function onInputKey(e){ if(e.key==='Enter'&&!e.shiftKey){ e.preventDefault(); sendChat(); } }

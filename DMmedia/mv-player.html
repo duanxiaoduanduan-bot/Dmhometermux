@@ -12,9 +12,6 @@ body{font-family:-apple-system,"PingFang SC","Microsoft YaHei","Helvetica Neue",
 .header .actions{margin-left:auto;display:flex;gap:6px}
 .header .actions button{padding:5px 14px;border-radius:14px;border:1px solid rgba(255,255,255,.1);background:rgba(255,255,255,.06);color:#aaa;font-size:11px;cursor:pointer}
 .header .actions button:hover{background:rgba(255,255,255,.12);color:#fff}
-.header .actions .search{margin-right:2px;padding:5px 12px;border-radius:14px;border:1px solid rgba(255,255,255,.1);background:rgba(255,255,255,.06);color:#eee;font-size:11px;width:150px;outline:none}
-.header .actions .search:focus{border-color:rgba(108,92,231,.5);background:rgba(255,255,255,.1)}
-.header .actions .search::placeholder{color:#777}
 
 /* 主布局 */
 .main{flex:1;display:flex;gap:16px;padding:16px;overflow:hidden;align-items:flex-start;justify-content:center}
@@ -96,6 +93,18 @@ body.fullscreen .cp video{width:100%;height:100%;object-fit:contain;background:#
 body.fullscreen .float-video{position:fixed;inset:0;z-index:300;resize:none;width:auto;height:auto;min-width:0;min-height:0}
 body.fullscreen .float-video video{width:100%;height:calc(100% - 24px);object-fit:contain}
 
+/* ===== 搜索栏 ===== */
+.searchbar{display:flex;align-items:center;gap:10px;padding:8px 16px;background:rgba(0,0,0,.2);border-bottom:1px solid rgba(255,255,255,.04);flex-shrink:0}
+.searchbar .sb-inner{display:flex;align-items:center;gap:8px;flex:1;max-width:440px;background:rgba(255,255,255,.05);border:1px solid rgba(255,255,255,.1);border-radius:16px;padding:6px 14px;transition:border-color .2s}
+.searchbar .sb-inner:focus-within{border-color:rgba(231,76,60,.55)}
+.searchbar .sb-ico{font-size:12px;opacity:.7}
+.searchbar input{flex:1;min-width:0;background:none;border:none;outline:none;color:#e0e0e0;font-size:13px;font-family:inherit}
+.searchbar input::placeholder{color:#666}
+.searchbar .clr{display:none;background:none;border:none;color:#888;cursor:pointer;font-size:13px;padding:0 2px;line-height:1}
+.searchbar .clr.show{display:block}
+.searchbar .clr:hover{color:#fff}
+.searchbar .sb-cnt{font-size:11px;color:#777;white-space:nowrap}
+
 @media(max-width:768px){
   .main{flex-direction:column;align-items:stretch;gap:12px;padding:10px}
   .side{width:100%;max-height:35vh}
@@ -114,13 +123,17 @@ body.fullscreen .float-video video{width:100%;height:calc(100% - 24px);object-fi
 <div class="drop-overlay" id="dz"><div style="font-size:48px">🎬</div><p>放开添加 MV</p></div>
 <div class="header"><h1>🎬 MV</h1><span class="st" id="status">...</span>
 <div class="actions">
-<input class="search" id="q" placeholder="🔍 搜索名称/演唱者" oninput="onSearch(this.value)">
 <button onclick="document.getElementById('fi').click()">📂 选文件</button>
 <button onclick="document.getElementById('fd').click()">📁 选文件夹</button>
 <button onclick="loadList()">🔄 刷新</button>
 </div>
 <input type="file" id="fi" multiple accept="video/*" style="display:none" onchange="addLocal(this.files)">
 <input type="file" id="fd" webkitdirectory multiple accept="video/*" style="display:none" onchange="addLocal(this.files)">
+</div>
+
+<div class="searchbar">
+  <div class="sb-inner"><span class="sb-ico">🔍</span><input id="q" placeholder="搜索名字…" oninput="onSearch(this.value)"><button class="clr" id="qclr" onclick="clearQ()">✕</button></div>
+  <span class="sb-cnt" id="qcnt"></span>
 </div>
 
 <div class="main">
@@ -165,8 +178,7 @@ body.fullscreen .float-video video{width:100%;height:calc(100% - 24px);object-fi
 </div>
 
 <script>
-let sg=[],ci=-1,shf=false,floatMode=false,q='';
-function onSearch(v){q=(v||'').trim().toLowerCase();up()}
+let sg=[],ci=-1,shf=false,floatMode=false;
 const V=document.getElementById('vp'), FV=document.getElementById('fvVp');
 const $=i=>document.getElementById(i),pl=$('pl'),nt=$('nt'),na=$('na'),pB=$('pB'),rB=$('pBar'),cT=$('cT'),tT=$('tT'),st=$('status'),ht=$('hint'),sc=$('sc'),dz=$('dz'),cp=$('cp'),es=$('es'),vo=$('vo'),fv=$('fv'),fvHdr=$('fvHdr'),fvTitle=$('fvTitle'),fvOverlay=$('fvOverlay'),fvBtn=$('fvBtn'),pb=$('pb'),body=$('body'),volBar=$('volBar'),volBtn=$('volBtn');
 
@@ -211,7 +223,7 @@ document.addEventListener('dragover',function(e){e.preventDefault();dz.classList
 document.addEventListener('dragleave',function(){dz.classList.remove('show')});
 document.addEventListener('drop',function(e){e.preventDefault();dz.classList.remove('show');addLocal(e.dataTransfer.files)});
 
-function addLocal(fl){var n=0;for(var i=0;i<fl.length;i++){var f=fl[i];if(!f.name.match(/\.(mp4|webm|mkv|mov|avi|flv|wmv)$/i))continue;var t=f.name.replace(/\.\w+$/,''),ar='',di=t.lastIndexOf(' - ');if(di>0){ar=t.slice(0,di);t=t.slice(di+3)}sg.push({title:t,artist:ar,url:URL.createObjectURL(f)});n++}if(n){st.textContent='📂 '+sg.length+'个';ht.textContent='';es.style.display='none';up();if(ci<0)playS(0)}}
+function addLocal(fl){var n=0;for(var i=0;i<fl.length;i++){var f=fl[i];if(!f.name.match(/\.(mp4|webm|mkv|mov|avi|flv|wmv)$/i))continue;var t=f.name.replace(/\.\w+$/,''),ar='',di=t.lastIndexOf(' - ');if(di>0){ar=t.slice(0,di);t=t.slice(di+3)}sg.push({title:t,artist:ar,url:URL.createObjectURL(f)});n++}if(n){st.textContent='📂 '+sg.length+'个';ht.textContent='';es.style.display='none';up();if(ci<0&&!resumeLast())playS(0)}}
 
 async function loadList(){
   st.textContent='加载中...';
@@ -224,44 +236,13 @@ async function loadList(){
     st.textContent='🎬 '+sg.length+'个';
     ht.textContent='';es.style.display='none';
     up();
-    if(sg.length){if(!tryResume())playS(0)}
+    if(sg.length&&ci<0&&!resumeLast())playS(0);
   }catch(e){
     st.textContent='📂 本地模式';
     ht.innerHTML='拖拽MV到窗口<br>或点「选文件」';
   }
 }
 
-function playS(i, resumeTime){
-  if(i<0||i>=sg.length)return;ci=i;var s=sg[i];nt.textContent=s.title;na.textContent=s.artist||'';fvTitle.textContent=s.title;
-  var url=s.url;
-  [V,FV].forEach(function(el){el.src=url;el.load()});
-  if(resumeTime!=null && isFinite(resumeTime)){
-    // 续播：定位到上次进度后自动播放
-    var apply=function(){var d=this.duration;if(isFinite(d)&&resumeTime>d)resumeTime=d;this.currentTime=Math.max(0,resumeTime);armPlay(this);};
-    V.addEventListener('loadedmetadata',function(){apply.call(V)},{once:true});
-    FV.addEventListener('loadedmetadata',function(){apply.call(FV)},{once:true});
-    pB.textContent='⏸';vo.style.display='none';fvOverlay.style.display='none';es.style.display='none';
-  } else {
-    var av=activeV();pB.textContent='⏸';vo.style.display='none';fvOverlay.style.display='none';es.style.display='none';armPlay(av);
-  }
-  if(!floatMode)V.style.display='block';
-  // 同步音量
-  [V,FV].forEach(function(el){el.volume=volBar.value/100});
-
-  var bind=function(el){
-    el.ontimeupdate=function(){if(el.duration&&isFinite(el.duration)&&!dragging){rB.value=(el.currentTime/el.duration)*1000;cT.textContent=f(el.currentTime)}saveProgressThrottled()};
-    el.onloadedmetadata=function(){tT.textContent=f(el.duration);up()};
-    el.ondurationchange=function(){if(isFinite(el.duration))tT.textContent=f(el.duration)};
-    el.onended=function(){rB.value=0;cT.textContent='00:00';nx()};
-    el.onerror=function(){rB.value=0;cT.textContent='00:00';nx()};
-    el.onplay=function(){pB.textContent='⏸';vo.style.display='none';fvOverlay.style.display='none'};
-    el.onpause=function(){pB.textContent='▶';vo.style.display='flex';fvOverlay.style.display='flex'};
-  };
-  bind(V);bind(FV);
-  up();
-}
-
-// 自动播放：浏览器禁止无交互自动播放时，首次点击/按键/触屏补播
 function armPlay(el){
   if(!el)return;
   el.play().catch(function(){
@@ -272,28 +253,34 @@ function armPlay(el){
     document.addEventListener('touchstart',once,{once:true});
   });
 }
-// ===== 续播：localStorage 进度保存/恢复 =====
-var _lastSave=0;
-function saveProgress(){
-  if(ci<0||!sg[ci]||!sg[ci].url)return;
-  var s=sg[ci],map=JSON.parse(localStorage.getItem('dmprog_mv')||'{}');
-  map[s.url]={t:Math.floor(activeV().currentTime)};
-  map.__last=s.url;
-  try{localStorage.setItem('dmprog_mv',JSON.stringify(map))}catch(e){}
-}
-function saveProgressThrottled(){var now=Date.now();if(now-_lastSave<3000)return;_lastSave=now;saveProgress()}
-function tryResume(){
-  var map=JSON.parse(localStorage.getItem('dmprog_mv')||'{}');
-  if(map.__last){
-    var url=map.__last,idx=sg.findIndex(function(s){return s.url===url});
-    if(idx>=0){var t=(map[url]&&map[url].t)||0;playS(idx,t);return true}
-  }
-  return false;
+function playS(i){if(i<0||i>=sg.length)return;ci=i;var s=sg[i];nt.textContent=s.title;na.textContent=s.artist||'';fvTitle.textContent=s.title;
+  var url=s.url;
+  rB.value=0;cT.textContent='00:00';tT.textContent='00:00';
+  [V,FV].forEach(function(el){el.src=url;el.load()});
+  var av=activeV();
+  armPlay(av);
+  pB.textContent='⏸';vo.style.display='none';fvOverlay.style.display='none';es.style.display='none';
+  if(!floatMode)V.style.display='block';
+  // 同步音量
+  [V,FV].forEach(function(el){el.volume=volBar.value/100});
+
+  var _pos=loadPos(url),_lastSave=0;
+  var bind=function(el){
+    el.ontimeupdate=function(){if(el.duration&&isFinite(el.duration)&&!dragging){rB.value=(el.currentTime/el.duration)*1000;cT.textContent=f(el.currentTime)}if(el.currentTime-_lastSave>5){savePos(url,el.currentTime,el.duration);_lastSave=el.currentTime}};
+    el.onloadedmetadata=function(){tT.textContent=f(el.duration);if(_pos&&_pos.t>0&&(!el.duration||_pos.t<el.duration-3)){el.currentTime=_pos.t;rB.value=(_pos.t/el.duration)*1000;cT.textContent=f(_pos.t);_lastSave=_pos.t}up()};
+    el.ondurationchange=function(){if(isFinite(el.duration))tT.textContent=f(el.duration)};
+    el.onended=function(){clearPos(url);rB.value=0;cT.textContent='00:00';nx()};
+    el.onerror=function(){rB.value=0;cT.textContent='00:00';nx()};
+    el.onplay=function(){pB.textContent='⏸';vo.style.display='none';fvOverlay.style.display='none'};
+    el.onpause=function(){pB.textContent='▶';vo.style.display='flex';fvOverlay.style.display='flex'};
+  };
+  bind(V);bind(FV);
+  up();
 }
 
 function togP(){if(!sg.length)return;if(ci<0){playS(0);return}
   var av=activeV();
-  if(av.paused){av.play().catch(function(){});pB.textContent='⏸';vo.style.display='none';fvOverlay.style.display='none'}
+  if(av.paused){armPlay(av);pB.textContent='⏸';vo.style.display='none';fvOverlay.style.display='none'}
   else{av.pause();pB.textContent='▶';vo.style.display='flex';fvOverlay.style.display='flex'}
 }
 
@@ -303,7 +290,7 @@ function toggleFloat(){
   if(floatMode){
     var t=V.currentTime,paused=V.paused;
     FV.currentTime=t;
-    if(!paused)FV.play().catch(function(){});else FV.pause();
+    if(!paused)armPlay(FV);else FV.pause();
     V.pause();V.style.display='none';cp.style.background='transparent';
     fv.style.display='block';
     if(!fv.style.left){fv.style.left=(window.innerWidth-340)+'px';fv.style.top='60px'}
@@ -313,7 +300,7 @@ function toggleFloat(){
   }else{
     var t=FV.currentTime,paused=FV.paused;
     V.currentTime=t;
-    if(!paused)V.play().catch(function(){});else V.pause();
+    if(!paused)armPlay(V);else V.pause();
     FV.pause();fv.style.display='none';cp.style.background='#000';
     V.style.display='block';
     fvBtn.classList.remove('active');
@@ -349,25 +336,22 @@ function skDrag(){if(!dragging)return;var av=activeV();var d=av.duration;if(!d||
 function skEnd(){dragging=false;var av=activeV();var d=av.duration;if(!d||!isFinite(d))return;var t=(rB.value/1000)*d;if(t>=0&&t<=d){V.currentTime=t;FV.currentTime=t}}
 
 function f(s){if(!s||isNaN(s)||!isFinite(s))return'00:00';return String(Math.floor(s/60)).padStart(2,'0')+':'+String(Math.floor(s%60)).padStart(2,'0')}
-function up(){
-  pl.innerHTML='';
-  var vis=sg.map(function(s,i){return {s:s,i:i}}).filter(function(o){
-    if(!q)return true;
-    var dt=o.s.title||'',da=o.s.artist||'';
-    if(o.s.title&&o.s.title.indexOf(' - ')>-1&&!o.s.artist){da=o.s.title.slice(0,o.s.title.lastIndexOf(' - '))}
-    return (dt.toLowerCase().indexOf(q)>-1)||(da.toLowerCase().indexOf(q)>-1);
-  });
-  sc.textContent='('+vis.length+'/'+sg.length+'个)';
-  if(!vis.length){pl.innerHTML='<div style="padding:30px;text-align:center;color:#555;font-size:12px;">无匹配结果</div>';return}
-  vis.forEach(function(o){
-    var i=o.i,s=o.s,dt=s.title,da=s.artist,di=s.title.lastIndexOf(' - ');if(di>0&&!s.artist){da=s.title.slice(0,di);dt=s.title.slice(di+3)}
-    var r=document.createElement('div');r.className='sr'+(i===ci?' act':'');
-    r.innerHTML='<div class="ix">'+(i+1)+'</div><div class="nf"><div class="nm">'+dt+'</div><div class="ar">'+da+'</div></div>';
-    r.onclick=function(j){return function(){if(j===ci)togP();else playS(j)}}(i);
-    pl.appendChild(r);
-  });
-}
-document.addEventListener('keydown',function(e){if(e.key===' '){e.preventDefault();togP()}if(e.key==='f'||e.key==='F'){toggleFS()}if(e.key==='ArrowUp'){volBar.value=Math.min(100,+volBar.value+5);setVol()}if(e.key==='ArrowDown'){volBar.value=Math.max(0,+volBar.value-5);setVol()}if(e.key==='m'||e.key==='M'){toggleMute()}});
+// 断点续播：按文件路径存进度（localStorage）
+var RESUME_KEY='dmmedia_resume_mv';
+function savePos(k,t,d){try{localStorage.setItem(RESUME_KEY,JSON.stringify({k:k,t:t,d:d}))}catch(e){}}
+function loadPos(k){try{var s=localStorage.getItem(RESUME_KEY);if(!s)return null;var o=JSON.parse(s);return(o&&o.k===k&&typeof o.t==='number')?o:null}catch(e){return null}}
+function clearPos(k){try{var o=JSON.parse(localStorage.getItem(RESUME_KEY)||'null');if(o&&o.k===k)localStorage.removeItem(RESUME_KEY)}catch(e){}}
+function resumeLast(){try{var s=localStorage.getItem(RESUME_KEY);if(!s)return false;var o=JSON.parse(s);if(!o||!o.k)return false;for(var i=0;i<sg.length;i++){if((sg[i].url||sg[i].file)===o.k){playS(i);return true}}}catch(e){}return false}
+// ===== 名字搜索 =====
+var q='';
+function filtered(){var r=[];for(var i=0;i<sg.length;i++){if(!q||((sg[i].title||'')+' '+(sg[i].artist||'')).toLowerCase().indexOf(q)>=0)r.push(i)}return r}
+function onSearch(v){q=(v||'').trim().toLowerCase();$('qclr').classList.toggle('show',!!q);$('qcnt').textContent=q?('找到 '+filtered().length+' 条'):'';up()}
+function clearQ(){$('q').value='';onSearch('')}
+function up(){pl.innerHTML='';var list=filtered();
+sc.textContent=q?('匹配 '+list.length+'/'+sg.length):('('+sg.length+'个)');
+if(!list.length){pl.innerHTML='<div style="padding:30px;text-align:center;color:#555;font-size:12px;">'+(q?'无匹配':'暂无')+'</div>';return}
+for(var n=0;n<list.length;n++){var i=list[n],s=sg[i],dt=s.title,da=s.artist,di=s.title.lastIndexOf(' - ');if(di>0&&!s.artist){da=s.title.slice(0,di);dt=s.title.slice(di+3)}var r=document.createElement('div');r.className='sr'+(i===ci?' act':'');r.innerHTML='<div class="ix">'+(i+1)+'</div><div class="nf"><div class="nm">'+dt+'</div><div class="ar">'+da+'</div></div>';r.onclick=function(j){return function(){if(j===ci)togP();else playS(j)}}(i);pl.appendChild(r)}}
+document.addEventListener('keydown',function(e){var t=e.target;if(t&&(t.tagName==='INPUT'||t.tagName==='TEXTAREA'))return;if(e.key==='Escape'&&q){clearQ();return}if(e.key===' '){e.preventDefault();togP()}if(e.key==='f'||e.key==='F'){toggleFS()}if(e.key==='ArrowUp'){volBar.value=Math.min(100,+volBar.value+5);setVol()}if(e.key==='ArrowDown'){volBar.value=Math.max(0,+volBar.value-5);setVol()}if(e.key==='m'||e.key==='M'){toggleMute()}});
 loadList();up();
 </script>
 </body>

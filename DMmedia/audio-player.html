@@ -53,7 +53,7 @@ body{font-family:-apple-system,"PingFang SC","Microsoft YaHei","Helvetica Neue",
 .es p{font-size:14px;line-height:1.6}
 
 /* 底部播放栏 */
-.pb{position:fixed;bottom:0;left:0;right:0;z-index:100;background:rgba(18,18,38,.97);backdrop-filter:blur(12px);-webkit-backdrop-filter:blur(12px);border-top:1px solid rgba(255,255,255,.08);display:flex;align-items:center;height:60px;padding:0 16px;gap:10px;box-shadow:0 -4px 20px rgba(0,0,0,.4)}
+.pb{position:fixed;bottom:0;left:0;right:0;z-index:100;background:rgba(18,18,38,.97);backdrop-filter:blur(12px);-webkit-backdrop-filter:blur(12px);border-top:1px solid rgba(255,255,255,.08);display:flex;align-items:center;justify-content:center;height:60px;padding:0 16px;gap:10px;box-shadow:0 -4px 20px rgba(0,0,0,.4)}
 .pb .ti{width:180px;overflow:hidden}
 .pb .ti .nm{font-size:12px;font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .pb .ti .ar{font-size:10px;color:#777}
@@ -68,6 +68,18 @@ body{font-family:-apple-system,"PingFang SC","Microsoft YaHei","Helvetica Neue",
 .pb .spd{font-size:11px;padding:3px 8px;border-radius:10px;border:1px solid rgba(255,255,255,.12);background:rgba(255,255,255,.05);color:#aaa;cursor:pointer;white-space:nowrap;transition:all .15s}
 .pb .spd:hover{color:#fff;border-color:rgba(0,184,148,.3)}
 .pb .spd.act{color:#00b894;border-color:rgba(0,184,148,.4);background:rgba(0,184,148,.1)}
+
+/* ===== 搜索栏 ===== */
+.searchbar{display:flex;align-items:center;gap:10px;padding:8px 16px;background:rgba(0,0,0,.2);border-bottom:1px solid rgba(255,255,255,.04);flex-shrink:0}
+.searchbar .sb-inner{display:flex;align-items:center;gap:8px;flex:1;max-width:440px;background:rgba(255,255,255,.05);border:1px solid rgba(255,255,255,.1);border-radius:16px;padding:6px 14px;transition:border-color .2s}
+.searchbar .sb-inner:focus-within{border-color:rgba(0,184,148,.6)}
+.searchbar .sb-ico{font-size:12px;opacity:.7}
+.searchbar input{flex:1;min-width:0;background:none;border:none;outline:none;color:#e0e0e0;font-size:13px;font-family:inherit}
+.searchbar input::placeholder{color:#666}
+.searchbar .clr{display:none;background:none;border:none;color:#888;cursor:pointer;font-size:13px;padding:0 2px;line-height:1}
+.searchbar .clr.show{display:block}
+.searchbar .clr:hover{color:#fff}
+.searchbar .sb-cnt{font-size:11px;color:#777;white-space:nowrap}
 
 @media(max-width:768px){
   .main{flex-direction:column;align-items:stretch;gap:12px;padding:10px}
@@ -89,6 +101,10 @@ body{font-family:-apple-system,"PingFang SC","Microsoft YaHei","Helvetica Neue",
 </div>
 <input type="file" id="fi" multiple accept="audio/*" style="display:none" onchange="addLocal(this.files)">
 <input type="file" id="fd" webkitdirectory multiple accept="audio/*" style="display:none" onchange="addLocal(this.files)">
+</div>
+<div class="searchbar">
+  <div class="sb-inner"><span class="sb-ico">🔍</span><input id="q" placeholder="搜索书名 / 章节…" oninput="onSearch(this.value)"><button class="clr" id="qclr" onclick="clearQ()">✕</button></div>
+  <span class="sb-cnt" id="qcnt"></span>
 </div>
 <div class="main">
 <div class="side" id="sidebar">
@@ -143,7 +159,7 @@ function addLocal(fl){
     sg.push({title:t,artist:ar,album:ar,url:URL.createObjectURL(f),_local:true});
     added++;
   }
-  if(added){st.textContent='📂 '+sg.length+'个';ht.textContent='';albums=buildAlbums();up();if(ci<0)playS(0)}
+  if(added){st.textContent='📂 '+sg.length+'个';ht.textContent='';albums=buildAlbums();up();if(ci<0&&!resumeLast())playS(0)}
 }
 
 // 从服务器加载
@@ -159,7 +175,7 @@ async function loadList(){
     ht.textContent='';
     albums=buildAlbums();
     up();
-    if(sg.length&&ci<0)showAlbums();
+    if(sg.length&&ci<0){if(!resumeLast())showAlbums()}
   }catch(e){
     st.textContent='📂 本地模式';
     ht.innerHTML='拖拽音频文件到窗口<br>或点「选文件」<br><br>将文件夹放入 Audio 目录<br>自动按专辑分组';
@@ -235,13 +251,15 @@ function backToAlbums(){
 function playS(i){
   if(i<0||i>=sg.length)return;ci=i;var s=sg[i];
   nt.textContent=s.title;na.textContent=(s.album||s.artist||'');
+  rB.value=0;cT.textContent='00:00';tT.textContent='00:00';
   A.src=s.url;A.play().catch(function(){});pB.textContent='⏸';
   // 右侧面板
   es.style.display='none';coverIcon.style.display='block';infoPanel.style.display='block';progressPanel.style.display='block';
   infoTitle.textContent=s.title;infoAlbum.textContent=s.album||'';
   // 如果当前在专辑视图里，更新高亮
-  if(currentAlbum)showAlbum(currentAlbum);else showAlbums();
+  if(q)renderSearch();else if(currentAlbum)showAlbum(currentAlbum);else showAlbums();
 
+  var _pos=loadPos(s.url),_lastSave=0;
   A.ontimeupdate=function(){
     if(A.duration&&isFinite(A.duration)&&!dragging){
       rB.value=(A.currentTime/A.duration)*1000;
@@ -250,10 +268,11 @@ function playS(i){
       var pct=Math.round((A.currentTime/A.duration)*100);
       pdPercent.textContent=pct+'%';pdFill.style.width=pct+'%';
     }
+    if(A.currentTime-_lastSave>5){savePos(s.url,A.currentTime,A.duration);_lastSave=A.currentTime}
   };
-  A.onloadedmetadata=function(){tT.textContent=f(A.duration);infoTotal.textContent=f(A.duration)};
+  A.onloadedmetadata=function(){tT.textContent=f(A.duration);infoTotal.textContent=f(A.duration);if(_pos&&_pos.t>0&&(!A.duration||_pos.t<A.duration-3)){A.currentTime=_pos.t;rB.value=(_pos.t/A.duration)*1000;cT.textContent=f(_pos.t);infoCurr.textContent=f(_pos.t);_lastSave=_pos.t}};
   A.ondurationchange=function(){if(isFinite(A.duration)){tT.textContent=f(A.duration);infoTotal.textContent=f(A.duration)}};
-  A.onended=function(){rB.value=0;cT.textContent='00:00';infoCurr.textContent='00:00';pdPercent.textContent='0%';pdFill.style.width='0%';seekNext()};
+  A.onended=function(){clearPos(s.url);rB.value=0;cT.textContent='00:00';infoCurr.textContent='00:00';pdPercent.textContent='0%';pdFill.style.width='0%';seekNext()};
   A.onerror=function(){rB.value=0;cT.textContent='00:00';es.style.display='flex';coverIcon.style.display='none';infoPanel.style.display='none';progressPanel.style.display='none';ht.textContent='加载失败，请重试';pB.textContent='▶'};
 }
 
@@ -276,10 +295,33 @@ function skStart(){dragging=true}
 function skDrag(){if(!dragging)return;var d=A.duration;if(!d||!isFinite(d))return;cT.textContent=f((rB.value/1000)*d)}
 function skEnd(){dragging=false;var d=A.duration;if(!d||!isFinite(d))return;var t=(rB.value/1000)*d;if(t>=0&&t<=d)A.currentTime=t}
 function f(s){if(!s||isNaN(s)||!isFinite(s))return'00:00';return String(Math.floor(s/60)).padStart(2,'0')+':'+String(Math.floor(s%60)).padStart(2,'0')}
+// 断点续播：按文件路径存进度（localStorage）
+var RESUME_KEY='dmmedia_resume_audio';
+function savePos(k,t,d){try{localStorage.setItem(RESUME_KEY,JSON.stringify({k:k,t:t,d:d}))}catch(e){}}
+function loadPos(k){try{var s=localStorage.getItem(RESUME_KEY);if(!s)return null;var o=JSON.parse(s);return(o&&o.k===k&&typeof o.t==='number')?o:null}catch(e){return null}}
+function clearPos(k){try{var o=JSON.parse(localStorage.getItem(RESUME_KEY)||'null');if(o&&o.k===k)localStorage.removeItem(RESUME_KEY)}catch(e){}}
+function resumeLast(){try{var s=localStorage.getItem(RESUME_KEY);if(!s)return false;var o=JSON.parse(s);if(!o||!o.k)return false;for(var i=0;i<sg.length;i++){if((sg[i].url||sg[i].file)===o.k){playS(i);return true}}}catch(e){}return false}
 function esc(s){return(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')}
 
-function up(){pl.innerHTML='';if(albums.length)showAlbums();else{pl.innerHTML='<div style="padding:24px;text-align:center;color:#555;font-size:12px">暂无内容</div>';sc.textContent=''}}
+// ===== 名字搜索（跨专辑扁平结果） =====
+var q='';
+function audioIdx(){var r=[];for(var i=0;i<sg.length;i++){var s=sg[i];if(!q||((s.title||'')+' '+(s.artist||'')+' '+(s.album||'')).toLowerCase().indexOf(q)>=0)r.push(i)}return r}
+function renderSearch(){
+  shTitle.textContent='🔍 搜索结果';backBtn.classList.remove('visible');
+  var res=audioIdx();pl.innerHTML='';sc.textContent='('+res.length+'条)';
+  if(!res.length){pl.innerHTML='<div style="padding:24px;text-align:center;color:#555;font-size:12px">无匹配</div>';return}
+  for(var n=0;n<res.length;n++){(function(idx){var s=sg[idx],dt=s.title,di=s.title.lastIndexOf(' - ');if(di>0)dt=s.title.slice(di+3);
+    var r=document.createElement('div');r.className='sr'+(idx===ci?' act':'');
+    r.innerHTML='<div class="ix">'+(n+1)+'</div><div class="nf"><div class="nm">'+esc(dt)+'</div><div class="ar">'+esc(s.album||s.artist||'')+'</div></div>';
+    r.onclick=function(){if(idx===ci)togP();else playS(idx)};pl.appendChild(r)})(res[n])}
+}
+function onSearch(v){q=(v||'').trim().toLowerCase();$('qclr').classList.toggle('show',!!q);$('qcnt').textContent=q?('找到 '+audioIdx().length+' 条'):'';up()}
+function clearQ(){$('q').value='';onSearch('')}
+
+function up(){pl.innerHTML='';if(q){renderSearch();return}if(albums.length)showAlbums();else{pl.innerHTML='<div style="padding:24px;text-align:center;color:#555;font-size:12px">暂无内容</div>';sc.textContent=''}}
 document.addEventListener('keydown',function(e){
+  var t=e.target;if(t&&(t.tagName==='INPUT'||t.tagName==='TEXTAREA'))return;
+  if(e.key==='Escape'&&q){clearQ();return}
   if(e.key===' '){e.preventDefault();togP()}
   if(e.key==='ArrowLeft'){e.preventDefault();pr()}
   if(e.key==='ArrowRight'){e.preventDefault();ff()}

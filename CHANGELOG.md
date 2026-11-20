@@ -261,3 +261,25 @@ dm → postgis → apps → geodata → start
 - **修 MultiLineString 长度算成 0m**：`flatCoords()` 展平后 haversine 正确累加。
 
 **数据模型**：点 → `MultiPoint`、线 → `MultiLineString`，`properties.name` 即站名/线名；命名经 `/save-geodata` UPSERT，已端到端验证中文名写入读回一致、删除无残留。
+
+---
+
+## 11. 迁入 Dm-family-v3 联合功能（2026-11-20）
+
+从 `D:/Dmhome/dm-family-v3`（main @ 11b9ff7，Ubuntu 现行版）把 10 月新增的**跨服务联合功能**迁进 termux 仓库。两个仓库是分叉的，采用**补丁式移植**：只往当前版加新功能，保留 termux 版已有改进（写真馆轮播常显/内联预览、armPlay 自动播放兜底、music 居中修复、DMChat 恢复码 sha256 体系）。
+
+**迁入功能**
+
+| 功能 | 文件 | 说明 |
+|------|------|------|
+| DMmedia 转播融合 | `DMmedia/server.js` `storage-config.json` `remotes.html` `index.html` | serverId+remotes、7 个 list 联邦聚合、/api/hello、/api/remotes CRUD、/remote/ 反代透传 Range、UDP 自动发现(18081，只修正已握手 remote 的 IP) |
+| 六播放器按名字搜索 | `DMmedia/*-player.html`×6 | 每播放器独立搜索栏、点了直接播；纯前端筛 `*-list.json`，远端转播内容天然可搜 |
+| 断点续播 + 自动定位 | 同上 | `dmmedia_resume_<type>` 每大类一条，打开自动续上次；剧集记住第几部第几集 |
+| 门户 6 tab | `DMpageo/index.html` `portal.js` | 媒体8081/聊天8083/地理8084/主页8086/网盘8087/控制台8088 |
+| DMChat 聊天记录持久化 | `DMChat/server.js` `index.html` | chatlogs/YYYY-MM/ 按月落盘、📜记录按钮(查日期/明细/导出TXT)、入群加载当日历史、HTTPS WSS handler 复用修复 |
+
+**刻意未迁入（安全模型差异）**：Dmhome 版把恢复码从 `sha256` 改成明文以支持"查看恢复码"——这是安全倒退，当前版保留 sha256 + 恢复码仅注册时显示一次的机制。
+
+**移植策略**：DMmedia/server.js 当前版是 Dmhome 版严格功能子集 → 整文件替换；book-reader/audio 播放器与门户两文件当前版无独立改动 → 整文件替换；tvdrama/mv/music 以 Dmhome 为基线补回 armPlay + music 居中 CSS；album 以当前版为底补丁式加搜索/续播（写真馆改进不丢）；DMChat server.js + index.html 补丁式，历史面板渲染改用当前版 `addChatMsg/fileStore` 机制（不依赖 Dmhome 的 renderBubble）。
+
+**验证**：6 播放器 + DMChat index 的内联 JS 全过 `node --check`；DMmedia server.js、DMChat server.js 语法通过；本机实测启动 DMmedia（PORT=18091）→ /api/hello 返回 serverId+8 媒体类型、/api/remotes、7 个 list 端点全 200；DMChat（PORT=18093）→ / 200、/api/chat-dates 与 /api/chat-history 未登录返回 403（鉴权正确）；无 termux 绝对路径残留。测试产物（serverId/ users.json/ chatlogs/ list 缓存）已全部还原。
