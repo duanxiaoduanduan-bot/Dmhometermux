@@ -32,11 +32,11 @@ for p in $(pgrep -f "node server.js"); do echo "$p -> $(readlink /proc/$p/cwd)";
 
 ## 3. 本机（Windows）访问设备端口不通
 
-**现象**：浏览器打 `http://192.168.1.40:808X` 打不开。
+**现象**：浏览器打 `http://192.168.1.21:808X` 打不开。
 
 **根因**：本机与设备不在同一网段/被防火墙隔离（多数情况其实直连可达，先验证）。
 
-**对策**：先在本机 `curl -s -o /dev/null -w "%{http_code}" http://192.168.1.40:808X/` 验证——实测通常返回 200。仅当网段隔离时用隧道：
+**对策**：先在本机 `curl -s -o /dev/null -w "%{http_code}" http://192.168.1.21:808X/` 验证——实测通常返回 200。仅当网段隔离时用隧道：
 ```bash
 ssh -N -L 18084:127.0.0.1:8084 arm   # 然后本机访问 http://127.0.0.1:18084
 ```
@@ -125,7 +125,7 @@ ssh -N -L 18084:127.0.0.1:8084 arm   # 然后本机访问 http://127.0.0.1:18084
 
 ## 12. DMChat 登不上去
 
-**现象**：打开 `http://192.168.1.40:8083` 是登录页，但登录总失败 / 没有可用账号。
+**现象**：打开 `http://192.168.1.21:8083` 是登录页，但登录总失败 / 没有可用账号。
 
 **根因**：DMChat 是**注册制**，没有预置固定密码。设备当前若无 `users.json` 则无账号；有账号但密码错也登不上。账号文件 `users.json`/`invites.json` 是运行时数据（gitignore），clone 到新机需重新注册。
 
@@ -229,4 +229,24 @@ sv up dm-DMcore   # 逐个或循环 up
 - 已修复（commit e4b6f52）：城市总数/点数改按"全市点（含未知区）"计算，仅列表不展示 `海外/未知` 区。修复后重启 DMgeo 即生效。
 - 验证：`curl 127.0.0.1:8084/api/geo/regional-stats?db=trip | python3 -m json.tool` → 看对应省下是否出现该市、`total` 是否含这些点。
 - 想给济源补区级下钻：用 `fetch-datav.js` 拉 419001 的 `_full.json` 把区导入 `districts` 即可（非必须，修复后无区也能显示）。
+
+---
+
+## 22. npm install 报 `Refusing to fetch "http://mirrors.tencent.com/npm/..."`
+
+**现象**：新机 `install.sh apps` 时 DMgeo / DMChat 依赖装失败，`geodata` 阶段因 DMgeo 缺 `pg` 包整个跳过；日志里是 `npm error Fetching packages of type "remote" have been disabled` / `Refusing to fetch "ws@http://mirrors.tencent.com/npm/ws/-/ws-8.21.0.tgz"`。
+
+**原因**：`DMChat/package-lock.json` / `DMgeo/package-lock.json` 里 `resolved` 字段硬编码了旧的腾讯镜像 http tarball 地址。npm 12 的安全策略拒绝从非当前 registry 的 "remote" tarball 拉取。这不是"换源"问题——设备 registry 本就是官方源，是 lock 文件残留。
+
+**对策**：把两个 lock 文件里的 `http://mirrors.tencent.com/npm/` 全部替换为 `https://registry.npmjs.org/`（已修复并提交）。之后 `npm install` 正常。判别：`grep -rl mirrors.tencent.com --include=package-lock.json .` 应无输出。
+
+---
+
+## 23. 新机部署后 `/api/geo` 报 `permission denied for table features`
+
+**现象**：服务全部 up、端口 200，但 `curl '127.0.0.1:8084/api/geo?db=trip'` 返回 500 `{"error":"permission denied for table features"}`，地图不显示要素。
+
+**原因**：termux 宿主 initdb 后，建库/建表用的是当前 unix 用户（超级用户，如 `u0_a218`），`features` 等表 owner 是它。`dmuser` 虽是数据库 OWNER，但**库内新建表的默认 owner 是建表者**，dmuser 对表无权限。这是第 6 条"重置 PG 后授权"在新机部署场景的具体表现。
+
+**对策**：`02-postgis.sh` 建表后已加入幂等授权段（对 trip/Basemap/dmpageo 三库 `GRANT ALL ON ALL TABLES/SEQUENCES` + `ALTER DEFAULT PRIVILEGES ... TO dmuser`），新机部署自动完成。已部署的机器若漏了，手动重跑该授权段即可（见脚本），无需重建库。验证：`PGPASSWORD=dmpageo123 psql -h 127.0.0.1 -U dmuser -d trip -tAc 'select count(*) from features'` 应返回数字而非权限错误。
 

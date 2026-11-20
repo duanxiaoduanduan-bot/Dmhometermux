@@ -61,5 +61,5 @@ info "执行 ./install.sh（pkg/runit 原生，含 PG+PostGIS）..."
 bash ./install.sh            # dm → postgis → apps → geodata → start
 
 ok "部署完成。服务由 runit 托管，运行在 termux 宿主。"
-info "局域网访问: http://192.168.1.38:<端口> （端口表见 README）。"
+info "局域网访问: http://<设备当前IP>:<端口> （IP 以实际为准，端口表见 README）。"
 info "看状态: cd $REPO_DIR && ./install.sh status"

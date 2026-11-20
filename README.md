@@ -69,7 +69,7 @@ bash termux.sh                        # 全自动：装依赖 → 复用/克隆�
 # 已有仓库想复用（含本地媒体）：bash termux.sh /path/to/your/repo
 ```
 
-- 服务由 runit 托管，端口在局域网 `http://192.168.1.40:<端口>` 可直接访问（见下方端口表）。
+- 服务由 runit 托管，端口在局域网 `http://192.168.1.21:<端口>` 可直接访问（见下方端口表）。
 - **严禁再用 PM2 / nohup 自启 DM 服务**（历史 PM2 方案已废弃并清理，`~/.bashrc` 的 `pm2 resurrect` 已移除）。DM 服务只由 runit 托管，混用会与 runit 双管理、造成孤儿进程 / 端口冲突。
 - 看状态：`cd ~/Dmhometermux && ./install.sh status`，或 `sv status dm-DMcore`。
 
@@ -115,7 +115,7 @@ DMChat 是**注册制**，没有预置固定密码：
 
 - 首次启动若没有邀请码，会自动生成 `admin` 前缀邀请码；**第一个注册的用户自动成为管理员**。
 - 账号数据 `DMChat/users.json` / `DMChat/invites.json` 是**运行时数据，已 gitignore**，不进仓库——clone 到新机需重新注册（首个注册者为 admin）。
-- 当前设备（192.168.1.40）已注册管理员账号 `duan`（admin），邀请码 `adminc50gch` 已用。**新用户需登录后在 DMChat 内生成新邀请码**；不要在公开仓库写明文密码 / 邀请码。
+- 设备 IP 会因 DHCP 变动，以实际为准（当前 `192.168.1.21`）。**首个到新机注册的用户即为管理员**；后续在 DMChat 内生成新邀请码。不要在公开仓库写明文密码 / 邀请码。
 
 ## 设计逻辑与排坑
 

@@ -118,6 +118,22 @@ for db in trip Basemap; do
   " 2>/dev/null || true
 done
 
+# ── 授权：新建表 owner 是当前 unix 用户(termux 超级用户)，dmuser 需显式授权 ──
+# 新机 initdb 后所有表由超级用户创建，dmuser 虽是库 owner 但对库内表无权限，
+# 导致 DMgeo /api/geo 报 "permission denied for table features"。必须补：
+#   现有表/序列 GRANT + 未来新表 ALTER DEFAULT PRIVILEGES（幂等，可重复执行）。
+info "授权 dmuser 访问三库表（含未来新建表）..."
+for db in trip Basemap dmpageo; do
+  psql -d "$db" -v ON_ERROR_STOP=0 <<SQL >/dev/null
+GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA public TO dmuser;
+GRANT ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA public TO dmuser;
+GRANT ALL ON SCHEMA public TO dmuser;
+ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON TABLES TO dmuser;
+ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON SEQUENCES TO dmuser;
+SQL
+done
+ok "dmuser 授权完成"
+
 # ── 结果校验：库必须真实存在且可连，否则失败（不假完成）──
 VERIFY=$(psql -d Basemap -tA -c "SELECT count(*) FROM pg_extension WHERE extname='postgis'" 2>/dev/null || echo "CONN_FAIL")
 if [ "$VERIFY" != "1" ]; then
