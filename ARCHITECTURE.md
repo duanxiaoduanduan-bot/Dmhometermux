@@ -43,9 +43,12 @@
 
 ### 2.4 远程设备要点
 
-- 设备 IP：`192.168.1.21`（DHCP 会漂，历史 .38→.40→.41→.93→.21），SSH 8022，别名 `ssh arm`（HostName 需随 IP 更新）。
-- Android 锁屏后 sshd/后台网络常被系统回收 → 唤醒：`termux-wake-lock`；sshd 被回收则 `pkill sshd; sshd`。
-- **本机（Windows）直连设备端口实测可达**（HTTP 200），一般无需隧道；仅当网段隔离时用 `ssh -N -L <本地端口>:127.0.0.1:<端口> arm`。
+- **主力设备**：`192.168.1.21`（荣耀9i，DHCP 会漂，历史 .38→.40→.41→.93→.21），SSH 8022，别名 `ssh arm`。
+- **第二设备**：红魔5G `192.168.1.193`（2026-11-20 从零部署，SSH 8022，用户 `u0_a208`，别名 `ssh redmagic`，`~/.ssh/config` 用 `id_arm_ubuntu` 密钥免密）。两机同版本（commit `be8cccf`）、同数据口径（cities 475 / districts 2840 / countries 242）。
+- 多设备共用局域网 DHCP，IP 会漂；以设备 Termux 内 `ifconfig wlan0` 为准，漂了就更新 `~/.ssh/config` 对应 HostName。
+- Android 锁屏后 sshd/后台网络常被系统回收 → 唤醒：`termux-wake-lock`；sshd 被回收则 `pkill sshd; sshd`。红魔后台策略尤其激进，实测重连即恢复。
+- **本机（Windows）直连设备端口实测可达**（HTTP 200），一般无需隧道；仅当网段隔离时用 `ssh -N -L <本地端口>:127.0.0.1:<端口> arm`（或 `redmagic`）。
+- **多机部署数据差异**：新机 features 表为空（尚无用户建点）属正常；要素维度统计只认当前 `?db=` 库，全局静态底图数据（省份/城市/国界）两机一致。联邦网盘（8087「🌐 全网」）可跨这两台设备浏览/下载，握手配置见 §12。
 
 ---
 

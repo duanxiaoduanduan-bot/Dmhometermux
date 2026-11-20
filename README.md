@@ -69,9 +69,22 @@ bash termux.sh                        # 全自动：装依赖 → 复用/克隆�
 # 已有仓库想复用（含本地媒体）：bash termux.sh /path/to/your/repo
 ```
 
-- 服务由 runit 托管，端口在局域网 `http://192.168.1.21:<端口>` 可直接访问（见下方端口表）。
+- 服务由 runit 托管，端口在局域网 `http://<设备IP>:<端口>` 可直接访问（见下方端口表）。当前有两台已部署设备：主力 `192.168.1.21`（别名 `ssh arm`）、红魔5G `192.168.1.193`（别名 `ssh redmagic`，2026-11-20 从零部署，两机数据/版本一致）。IP 因 DHCP 会漂，以 Termux 里 `ifconfig wlan0` 为准。
+- **设备端 GitHub 443 不可达时**（如红魔），无法直接 `git clone`，用本机打包带 `.git` 推上去等价重建：
+  ```bash
+  # 本机（Windows Git Bash）：打包 → 推送 → 设备端解压
+  cd /d/Dmhometermux && tar --exclude='.workbuddy' --exclude='node_modules' \
+    --exclude='DMmedia/storage-config.json' \
+    --exclude='DMmedia/album' --exclude='DMmedia/music' --exclude='DMmedia/video' \
+    --exclude='DMmedia/tvdrama' -czf ~/dm-repo.tar.gz Dmhometermux
+  scp ~/dm-repo.tar.gz redmagic:~/ && ssh redmagic 'cd ~ && tar -xzf dm-repo.tar.gz'
+  ```
+  然后设备端 `cd ~/Dmhometermux && ./install.sh`（分阶段 `dm`→`postgis`→`apps`→`geodata`→`start` 更便于定位）。
+  ⚠️ **更新已部署设备**时 `DMmedia/storage-config.json` 必须排除（它含设备运行期生成的 serverId / 握手 remotes，覆盖会导致联邦网盘身份漂移，详见 TROUBLESHOOTING 第 25 条）；**新机首次部署不要排除**（需要初始配置）。
+- **新机 front-end HTML 与新机一致的前提**：install.sh 全程不编译前端，DMmedia `server.js` 直接 serve 仓库内 HTML——所以新机界面 ≡ 推送上去的仓库 HTML。务必推最新代码，否则丢失搜索/续播等修复。
 - **严禁再用 PM2 / nohup 自启 DM 服务**（历史 PM2 方案已废弃并清理，`~/.bashrc` 的 `pm2 resurrect` 已移除）。DM 服务只由 runit 托管，混用会与 runit 双管理、造成孤儿进程 / 端口冲突。
-- 看状态：`cd ~/Dmhometermux && ./install.sh status`，或 `sv status dm-DMcore`。
+- 看状态：`cd ~/Dmhometermux && ./install.sh status`；termux 下 `sv` 必须显式指定 SVDIR：`SVDIR=$PREFIX/var/service $PREFIX/bin/sv status dm-DMcore`（服务名 `dm-DMChat` 是大写 C）。
+- 新机装包若卡在 pip：`~/.config/pip/pip.conf` 配清华源（`index-url = https://pypi.tuna.tsinghua.edu.cn/simple`）；apt 源用 `termux-change-repo` 选上海交大/清华。若报 `dpkg was interrupted` 先跑 `dpkg --configure -a`。
 
 ## 一键脚本（日常运维）
 

@@ -263,3 +263,64 @@ sv up dm-DMcore   # 逐个或循环 up
 
 **对策**：`02-postgis.sh` 建表后已加入幂等授权段（对 trip/Basemap/dmpageo 三库 `GRANT ALL ON ALL TABLES/SEQUENCES` + `ALTER DEFAULT PRIVILEGES ... TO dmuser`），新机部署自动完成。已部署的机器若漏了，手动重跑该授权段即可（见脚本），无需重建库。验证：`PGPASSWORD=dmpageo123 psql -h 127.0.0.1 -U dmuser -d trip -tAc 'select count(*) from features'` 应返回数字而非权限错误。
 
+
+## 24. 新机（红魔5G）部署全套踩坑与正解（2026-11-20）
+
+从零给红魔5G（骁龙865 / Android / u0_a208）部署 dm-family，一次跑通，记录几个非显然的坑：
+
+1. **Termux 下载链接别下错**：GitHub Packages 的 `com.termux.termux-shared` 是开发者依赖库（.aar/.jar），不是可安装 APK。正解是 GitHub Releases `termux/termux-app` → v0.118.3 稳定版 `..._arm64-v8a.apk`。
+
+2. **`dpkg was interrupted, run 'dpkg --configure -a'`**：`pkg update/upgrade` 中途被打断（锁屏/切后台/网络断）后 dpkg 锁死，之后所有 pkg 命令都拒绝执行。先 `dpkg --configure -a` 解锁，再重跑安装。
+
+3. **apt / pip 双源都要换**：国内网络下 Termux apt 官方源慢 → `termux-change-repo` 选上海交大/清华；Python 侧 venv 里 `pip install -U pip` 会卡官方 PyPI → 先配 `~/.config/pip/pip.conf`：
+   ```
+   [global]
+   index-url = https://pypi.tuna.tsinghua.edu.cn/simple
+   trusted-host = pypi.tuna.tsinghua.edu.cn
+   timeout = 60
+   ```
+   不配的话 `install.sh dm` 会永远卡在"在 venv 中安装 DMcore 依赖"，看似无输出实则等网络。
+
+4. **设备端 GitHub 443 不可达 → 无法 clone**：红魔 `git clone` 走不通（但 raw.githubusercontent.com 可达）。用本机 `tar --exclude` 打包带 `.git` 仓库 → `scp` → 设备端解压，再跑 `./install.sh`，等价重建。详见 README「在 Termux 一键部署」。
+
+5. **adb 不是最省事的路**：本机 winget 装 platform-tools 报 `Installer hash does not match`；直下官方 zip 可解。但 USB adb 需管理员权限装驱动（VID_12D1 是华为/荣耀，红魔是 18A1/05C6；当时误插荣耀9i），无线 adb 要在开发者选项手动开。**结论：Termux `pkg install openssh && sshd` + 网络 SSH 才是一劳永逸的通道**，本机配 `Host redmagic` 别名密钥免密。
+
+6. **验证不能只看 HTTP 200**：`curl /` 返回 200 只说明服务进程活着，还要验 `/api/geo?db=trip` 返回合法 GeoJSON（验证 PG 授权，见第 23 条），且 DMChat 的 8443 要用 `https://` 探（`curl -sk ...:8443/` 应 200，证书由 dmcore-start.sh 自愈生成）。
+
+7. **cities 数 475 vs 汇总 587**：`geodata` 日志里"市(含区) 587"是汇总口径，入库 `Basemap.cities` 实际 475 市（+districts 2840）；这是去重后的正常值，与跑了很久的主力设备完全一致，不是数据丢失。dmpageo 库无 `features` 表属正常（它只存 countries 世界国界）。
+
+8. **`sv status` 报 usage / "file does not exist"**：termux 下 `$SVDIR` 为空，必须显式指定：`SVDIR=$PREFIX/var/service $PREFIX/bin/sv status dm-DMcore`；服务名 `dm-DMChat` 是大写 C，写错会报 "unable to change to service directory"。`sv status` 不带服务名会打印 usage（正常）。
+
+## 25. 从本机 tar 推送代码到已部署设备时，会冲掉设备的 serverId（联邦网盘身份漂移）
+
+**现象**：用本机 `tar` 打包 → `scp` → 设备端解压更新代码后，8087「🌐 全网」里这台设备**身份变了**——其它设备按旧 serverId 登记的 remote 失效，得重新握手。表面看服务全正常、端口 200，很难察觉。
+
+**原因**：`DMmedia/storage-config.json` 是**受版本控制**的文件（`git ls-files` 能看到），里面的 `serverId` 字段却由每台设备**运行期自动生成**：`DMmedia/server.js` 启动时会检查 `serverId`，若为空就 `generateId()` 生成并写回文件（第 43-55 行）。
+
+- 本机 / GitHub 仓库里的 `storage-config.json` → `"serverId": ""`（空）
+- 设备实际跑起来后 → `"serverId": "3d2f1bde-..."`（各自的 UUID）
+
+用本机打包覆盖推送，会把设备上的 UUID 冲成空字符串；服务重启后**重新生成一个新 UUID**——于是联邦网盘里这台的 ID 变了，别人登记的旧 ID 指向一个不存在的设备。`remotes` 字段同理（握手记录在设备端，覆盖会清空）。
+
+**正确姿势（二选一）**：
+
+1. **打包时排除**（推荐，最省事）——本机 tar 命令加两个 `--exclude`：
+   ```bash
+   tar --exclude='.workbuddy' --exclude='node_modules' \
+       --exclude='DMmedia/storage-config.json' \
+       --exclude='DMmedia/album' --exclude='DMmedia/music' \
+       --exclude='DMmedia/video' --exclude='DMmedia/tvdrama' \
+       -czf ~/dm-repo.tar.gz Dmhometermux
+   ```
+   设备端解压时不会碰原 `storage-config.json`，serverId / remotes 原样保留。**新机首次部署不能排除**（需要仓库里的初始配置）。
+
+2. **推送后还原**——设备端先在推送前备份，解压后覆盖回去：
+   ```bash
+   cp ~/Dmhometermux/DMmedia/storage-config.json ~/storage-config.bak.json
+   # ...解压更新代码...
+   cp ~/storage-config.bak.json ~/Dmhometermux/DMmedia/storage-config.json
+   ```
+
+**验证**：推送前后在设备上看 `grep serverId ~/Dmhometermux/DMmedia/storage-config.json`，UUID 应保持不变；`curl -s http://127.0.0.1:8087/api/info` 里的 `serverId` 也应一致。
+
+**同理适用**：任何"设备运行期会写回、且被 git 跟踪"的配置文件，覆盖式推送前都要先想清楚——不只是 serverId。判断方法：`git status` 在设备上显示 `M` 的文件，就是被运行期改过的，推送时别让本机版本盖掉。
