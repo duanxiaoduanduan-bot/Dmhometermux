@@ -324,3 +324,19 @@ sv up dm-DMcore   # 逐个或循环 up
 **验证**：推送前后在设备上看 `grep serverId ~/Dmhometermux/DMmedia/storage-config.json`，UUID 应保持不变；`curl -s http://127.0.0.1:8087/api/info` 里的 `serverId` 也应一致。
 
 **同理适用**：任何"设备运行期会写回、且被 git 跟踪"的配置文件，覆盖式推送前都要先想清楚——不只是 serverId。判断方法：`git status` 在设备上显示 `M` 的文件，就是被运行期改过的，推送时别让本机版本盖掉。
+
+## 26. 新机部署后音乐/视频/网盘全空：媒体目录从未被创建（2026-11-21）
+
+**现象**：dm-family 装完、所有端口 200，但 8081 音乐/视频/TV 剧/相册是空的，8087 网盘里也没有 `music`/`video`/`album`/`pdf` 等文件夹。红魔新机和跑了很久的主力机都复现。
+
+**根因**：`DMmedia/storage-config.json` 定义了 8 个媒体路径（`./music` `./video` `./tvdrama` `./album` `./book` `./pdf` `./Audio` `./geodata`），`server.js` 启动后按这些路径扫描媒体；但这些**目录本身被 `.gitignore` 忽略、安装脚本也从未创建**（历史遗留）。主力机靠 `file-shortcuts.json` 快捷方式指向别处才一直没暴露，新机没快捷方式就直接全空。
+
+**修复**：
+1. 已改 `install/03-apps.sh`：apps 阶段从 `storage-config.json` 的 `paths.*.dir` 读取并 `mkdir -p` 建齐所有媒体目录（跳过绝对路径残留、幂等、node 实现）。新机部署不会再漏。
+2. 已部署设备补建（无需重启服务，scanWithCache 会随目录出现重新扫到）：
+   - 能通过 8087 网页接口建：`POST http://<设备>:8087/api/mkdir`，body `{"parent":"<DMmedia绝对路径>","name":"music"}`，8 个目录逐个建。
+   - 或 SSH：`cd ~/Dmhometermux/DMmedia && mkdir -p music video tvdrama album book pdf Audio geodata`。
+
+**验证**：`curl http://<设备>:8087/api/list?path=music` 返回 `{"current":".../DMmedia/music",...}` 即目录就位；放媒体文件进去后 `curl http://<设备>:8081/music-list.json` 应返回对应条目。
+
+**同理**：DMshow 素材库 `library/{works,albums,videos,gallery}` 由 03-apps.sh 显式建，不受此问题影响。

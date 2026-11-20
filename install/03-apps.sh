@@ -48,5 +48,29 @@ if [ -d "$ROOT/DMshow" ]; then
   mkdir -p "$ROOT/DMshow/library"/{works,albums,videos,gallery}
 fi
 
+# DMmedia 媒体目录：server.js 只按 storage-config.json 的 paths.*.dir 扫描，
+# 但目录本身从未被创建（被 .gitignore 忽略），导致新机部署后音乐/视频/网盘全是空的。
+# 从配置里读取所有 dir 并建齐，绝对路径（历史残留）跳过。
+if [ -f "$ROOT/DMmedia/storage-config.json" ] && have node; then
+  node -e '
+    const fs = require("fs"), path = require("path");
+    const base = process.argv[1], cfgPath = process.argv[2];
+    try {
+      const cfg = JSON.parse(fs.readFileSync(cfgPath, "utf8"));
+      let n = 0;
+      for (const p of Object.values(cfg.paths || {})) {
+        const d = p && p.dir;
+        if (!d || path.isAbsolute(d)) continue;
+        const full = path.resolve(base, d);
+        if (!fs.existsSync(full)) { fs.mkdirSync(full, { recursive: true }); n++; }
+      }
+      console.log("  媒体目录已建齐（新增 " + n + " 个）");
+    } catch (e) {
+      console.error("  建媒体目录失败: " + e.message);
+      process.exit(0);
+    }
+  ' "$ROOT/DMmedia" "$ROOT/DMmedia/storage-config.json"
+fi
+
 mark_done "apps"
 ok "业务依赖阶段完成: ${APPS[*]}"
