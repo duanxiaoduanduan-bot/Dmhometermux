@@ -302,10 +302,11 @@ function scanAlbumWithCache() {
 // ===== 转播服务器（remotes）聚合 =====
 
 // 请求远端某个 list 的 JSON，失败/超时返回 null（静默降级）
+// 带 local=1：只要对方的纯本地列表，避免双向握手时 A 拉 B、B 又拉 A 形成递归环（4s 超时降级）
 function fetchRemoteJson(remote, listName, timeoutMs) {
   const t = timeoutMs || 4000;
   let target;
-  try { target = remote.url.replace(/\/+$/, '') + '/' + listName + '.json'; }
+  try { target = remote.url.replace(/\/+$/, '') + '/' + listName + '.json?local=1'; }
   catch (e) { return Promise.resolve(null); }
   return new Promise((resolve) => {
     const req = http.get(target, { timeout: t }, (res) => {
@@ -363,15 +364,18 @@ function mergeByList(localData, remoteData, remote, listName) {
 }
 
 // 聚合响应：本机 + 全部在线 remote；shape = 'flat' | 'series'
-async function respondAggregated(res, listName, localFactory, shape) {
+// localOnly=true 时只返回本机列表（供对端拉取，打断双向握手的递归环）
+async function respondAggregated(res, listName, localFactory, shape, localOnly) {
   try {
     let merged = localFactory();
-    const remotes = (config.remotes || []).filter((r) => r && r.enabled && r.url);
-    if (remotes.length) {
-      const results = await Promise.all(remotes.map((r) => fetchRemoteJson(r, listName)));
-      remotes.forEach((remote, i) => {
-        if (results[i] != null) merged = mergeByList(merged, results[i], remote, listName);
-      });
+    if (!localOnly) {
+      const remotes = (config.remotes || []).filter((r) => r && r.enabled && r.url);
+      if (remotes.length) {
+        const results = await Promise.all(remotes.map((r) => fetchRemoteJson(r, listName)));
+        remotes.forEach((remote, i) => {
+          if (results[i] != null) merged = mergeByList(merged, results[i], remote, listName);
+        });
+      }
     }
     res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', ...NO_CACHE_HEADERS });
     const body = shape === 'series' ? { series: merged } : merged;
@@ -422,43 +426,45 @@ function probeRemote(url, timeoutMs) {
 const server = http.createServer((req, res) => {
   const url = new URL(req.url, `http://${req.headers.host}`);
   let reqPath = decodeURIComponent(url.pathname);
+  // 对端拉取时带 local=1，只返回本机列表，避免双向握手递归
+  const localOnly = url.searchParams.get('local') === '1';
 
   // JSON 请求 → 缓存扫描 + 转播服务器聚合（远端离线自动降级，只剩本机）
   if (reqPath === '/music-list.json') {
     return respondAggregated(res, 'music-list', () => {
       const cfg = config.paths.music;
       return scanWithCache(resolveDir(cfg), cfg.exts, 'music-list', true, 'media/music/');
-    }, 'flat');
+    }, 'flat', localOnly);
   }
   if (reqPath === '/book-list.json') {
     return respondAggregated(res, 'book-list', () => {
       const cfg = config.paths.book;
       return scanWithCache(resolveDir(cfg), cfg.exts, 'book-list', true, 'media/book/');
-    }, 'flat');
+    }, 'flat', localOnly);
   }
   if (reqPath === '/pdf-list.json') {
     return respondAggregated(res, 'pdf-list', () => {
       const cfg = config.paths.pdf;
       return scanWithCache(resolveDir(cfg), cfg.exts, 'pdf-list', false, 'media/pdf/');
-    }, 'flat');
+    }, 'flat', localOnly);
   }
   if (reqPath === '/audio-list.json') {
     return respondAggregated(res, 'audio-list', () => {
       const cfg = config.paths.audio;
       return scanWithCache(resolveDir(cfg), cfg.exts, 'audio-list', true, 'media/audio/');
-    }, 'flat');
+    }, 'flat', localOnly);
   }
   if (reqPath === '/tvdrama-list.json') {
-    return respondAggregated(res, 'tvdrama-list', () => scanSeriesWithCache(), 'series');
+    return respondAggregated(res, 'tvdrama-list', () => scanSeriesWithCache(), 'series', localOnly);
   }
   if (reqPath === '/video-list.json') {
     return respondAggregated(res, 'video-list', () => {
       const cfg = config.paths.video;
       return scanWithCache(resolveDir(cfg), cfg.exts, 'video-list', true, 'media/video/');
-    }, 'flat');
+    }, 'flat', localOnly);
   }
   if (reqPath === '/album-list.json') {
-    return respondAggregated(res, 'album-list', () => scanAlbumWithCache(), 'flat');
+    return respondAggregated(res, 'album-list', () => scanAlbumWithCache(), 'flat', localOnly);
   }
 
   // GET /api/browse → 浏览目录

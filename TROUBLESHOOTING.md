@@ -340,3 +340,20 @@ sv up dm-DMcore   # 逐个或循环 up
 **验证**：`curl http://<设备>:8087/api/list?path=music` 返回 `{"current":".../DMmedia/music",...}` 即目录就位；放媒体文件进去后 `curl http://<设备>:8081/music-list.json` 应返回对应条目。
 
 **同理**：DMshow 素材库 `library/{works,albums,videos,gallery}` 由 03-apps.sh 显式建，不受此问题影响。
+
+## 27. 双向握手后音乐/媒体没合并：递归拉取 4 秒超时互相降级（2026-11-21）
+
+**现象**：两台设备各自握手成功后 `GET /api/remotes` 都显示 `online:true`，但 `/music-list.json` 只返回本机列表，对方的音乐死活合并不过来；每个聚合请求恰好耗时 **4.0 秒**。
+
+**根因**：握手是单向登记（见前），双向可见需在两台各握手一次。但 `respondAggregated()` 拉远端时请求对方的 `music-list.json`（本身也是聚合端点），于是 A 拉 B → B 拉 A → 互相阻塞，双方都撞上 `fetchRemoteJson` 的默认 4s 超时 → 静默降级成只剩本地。表现为"握手成功但不合并"。
+
+**诊断决定性实验**：临时 `DELETE` 掉其中一台的 remote 打破环，另一台的聚合立刻从 4s 降到 0.27s 并正确合并出对方的条目（`_remote` 字段标记来源）。
+
+**修复**（`DMmedia/server.js`）：
+1. `fetchRemoteJson()` 请求远端列表时加 `?local=1`；
+2. `respondAggregated()` 增加 `localOnly` 参数，为 true 时跳过远端聚合、只返回本机列表；
+3. createServer 里解析 `url.searchParams.get('local')==='1'`，传给全部 7 个 list 端点（music/book/pdf/audio/tvdrama/video/album）。
+
+效果：对端拉到的是**纯本地**列表，递归环被打断；用户页面正常请求（不带 local）仍拿到本机+所有 remote 的聚合。`local=1` 是内部协议，不影响前端。
+
+**部署**：改完需重启 8081 进程（`SVDIR=$PREFIX/var/service $PREFIX/bin/sv restart dm-DMmedia`）才生效。红魔 sshd 被后台回收时，可先用 8087 的 `/api/upload`（原始流，`?dir=<DMmedia绝对路径>&name=server.js`）覆盖文件——注意该接口防重名会自动改名 `server_1.js`，需先 `DELETE /api/delete` 删掉原 `server.js` 再传。**只替换 server.js，绝不动 storage-config.json**（保住 serverId 与握手记录）。
