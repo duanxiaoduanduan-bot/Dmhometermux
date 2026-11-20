@@ -357,3 +357,23 @@ sv up dm-DMcore   # 逐个或循环 up
 效果：对端拉到的是**纯本地**列表，递归环被打断；用户页面正常请求（不带 local）仍拿到本机+所有 remote 的聚合。`local=1` 是内部协议，不影响前端。
 
 **部署**：改完需重启 8081 进程（`SVDIR=$PREFIX/var/service $PREFIX/bin/sv restart dm-DMmedia`）才生效。红魔 sshd 被后台回收时，可先用 8087 的 `/api/upload`（原始流，`?dir=<DMmedia绝对路径>&name=server.js`）覆盖文件——注意该接口防重名会自动改名 `server_1.js`，需先 `DELETE /api/delete` 删掉原 `server.js` 再传。**只替换 server.js，绝不动 storage-config.json**（保住 serverId 与握手记录）。
+
+## 28. 删除媒体文件后列表残留：`getDirMtime` 只看文件 mtime 最大值（2026-11-21）
+
+**现象**：删掉音乐/视频文件后，8081 媒体列表里仍显示该文件（残留），要过很久甚至重启才消失。断断描述"删了还有残留，好像两个似的但其实也不会"。
+
+**根因**：`scanWithCache()` 用 `getDirMtime(dir)` 做缓存指纹，而旧版 `getDirMtime` 取的是**目录树内所有文件的最大 mtime**。删除一个**不是最新**的文件时，剩余文件的最大 mtime 完全不变 → 缓存命中 → 返回含已删条目的旧列表。删除最新文件则正常（最大值变了），所以问题间歇出现、难复现。
+
+**修复**（`DMmedia/server.js` 的 `getDirMtime`）：
+- 把每个**目录自身的 mtime** 纳入指纹（增删子项都会刷新所在目录 mtime），并累计**条目数**兜底；
+- 返回值从纯数字改为 `最大mtime:条目数` 字符串（3 处缓存共用：普通媒体/tvdrama/album，都用 `===` 比较，字符串比较正常）。
+
+效果：增删任意文件（无论新旧）都会改变指纹 → 缓存即时失效 → 列表正确刷新。实测：放一个旧 mtime 临时文件→列表+1，删除→立刻回到原数、无残留。
+
+**复现/验证技巧**：要复现必须删"最旧"的文件；用 `touch -d '2020-01-01'` 造旧 mtime 文件最稳。注意别误删用户真实文件——本次实验误删了「龙珠之谜.mp3」，已从本机 `~/Downloads/music/` 恢复。
+
+**关于"看起来像两个"**：同名文件若在两台设备都存在（如各存一份 `凡人tv.mp3`），聚合列表会显示两条（本机 + remote 各一），这是真实的两份文件、非重复 bug；用 `grep -o` 数文件名要注意 name 和 file 字段各出现一次，别误判成重复。
+
+**覆盖范围（2026-11-21 两台实测）**：首页 6 个媒体入口（电视剧 / MV / 音乐 / 写真馆 / 有声书 / 阅读）对应 7 个列表端点 `music-list.json`、`video-list.json`、`tvdrama-list.json`、`album-list.json`、`audio-list.json`、`book-list.json`、`pdf-list.json`，**全部共用同一个 `getDirMtime`**（`scanWithCache` 管 5 个普通库、`scanSeriesWithCache` 管电视剧、`scanAlbumWithCache` 管写真馆），因此一次修复覆盖全部。回归测试必须造「两个文件、删较旧那个」，空目录增删验不出此 bug。荣耀9i 与红魔两台 × 7 端点逐项实测：加入 2 文件 → 删除旧文件 → 列表即时少 1 条，14/14 全通过，临时文件零残留。
+
+**⚠️ 待办：DMgeo 有一份独立同款实现**。`DMgeo/server.js` 第 236 行的 `getDirMtime` 与旧版 DMmedia 完全一样（只取文件最大 mtime），供 `/geodata-list.json` 的 `scanGeodataWithCache()` 使用；通过 API 写要素/删要素时会 `delete cache['geodata-list']` 兜住，但**用户直接删 geodata 目录里的文件仍会残留**。全仓库仅此两处 `getDirMtime` 定义（DMshow 为实时扫描、无缓存）。按断断要求「回头再改」，暂未修改。

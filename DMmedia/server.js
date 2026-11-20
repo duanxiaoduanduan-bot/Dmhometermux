@@ -106,15 +106,21 @@ const MIME = {
 // 缓存结构: { 'music': { mtime: 1234567890, data: [...] } }
 const cache = {};
 
-// 获取目录的最新修改时间（快速判断是否有变化）
-// 递归获取目录及其所有子目录的最新修改时间
+// 获取目录树的变化指纹（快速判断是否有增删/改动）
+// 必须把「目录自身的 mtime」也算进去：删除一个不是最新的文件时，
+// 剩余文件的最大 mtime 不变，只看文件 mtime 会误判「没变化」→ 列表残留已删条目。
+// 增删文件都会刷新所在目录的 mtime，因此纳入目录 mtime 即可覆盖增/删/改。
 function getDirMtime(dirPath) {
   try {
     let latest = 0;
+    let count = 0;
     const stack = [dirPath];
     while (stack.length) {
       const current = stack.pop();
+      // 目录自身 mtime：新增/删除子项都会更新
+      try { const ds = fs.statSync(current); if (ds.mtimeMs > latest) latest = ds.mtimeMs; } catch (_) {}
       const entries = fs.readdirSync(current, { withFileTypes: true });
+      count += entries.length;
       for (const entry of entries) {
         const fullPath = path.join(current, entry.name);
         const stat = fs.statSync(fullPath);
@@ -124,7 +130,8 @@ function getDirMtime(dirPath) {
         }
       }
     }
-    return latest;
+    // 条目数也纳入指纹，进一步兜住同 mtime 的增删
+    return latest + ':' + count;
   } catch (e) { return 0; }
 }
 
